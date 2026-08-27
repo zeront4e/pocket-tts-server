@@ -23,10 +23,14 @@ export async function healthHandler(_req: Request): Promise<Response> {
     };
   }
 
+  // Both sidecars are required (startSidecars is fatal if any is missing), so
+  // "healthy" means every language can generate right now.
+  const allReady = ALL_LANGS.every((lang) => isSidecarReady(lang));
+
   return Response.json({
-    status: isSidecarReady(defaultLang) ? "healthy" : "degraded",
-    // Backwards-compatible: true once the DEFAULT language can generate.
-    sidecar: isSidecarReady(defaultLang),
+    status: allReady ? "healthy" : "degraded",
+    // Backwards-compatible: true once every language can generate.
+    sidecar: allReady,
     mode: isLocalMode() ? "local" : "huggingface",
     model_dir: getModelDir("de"),
     model_dir_en: getModelDir("en"),

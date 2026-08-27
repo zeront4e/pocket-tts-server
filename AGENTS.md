@@ -11,7 +11,7 @@ switching languages is pure routing with no model reload, both models stay resid
 ## Commands
 
 ```bash
-bun run src/index.ts            # start server (spawns both sidecars in parallel, waits for model load)
+bun run src/index.ts            # start server (spawns both sidecars in parallel, waits for BOTH model loads; exits if either sidecar fails)
 bun run scripts/clone-voice.ts <ref.wav> [name] [--lang de|en]   # clone a voice -> voices/de/<name>.safetensors (de) or voices/en/<name>.safetensors (en)
 bun test                        # run tests (none yet)
 tsc --noEmit                    # typecheck (uses tsconfig.json; types from bun-types)
@@ -40,10 +40,13 @@ There is no linter configured. Test endpoints with curl against a running server
   `uv run python scripts/sidecar_wrapper.py` (NOT `pocket-tts serve`) with its OWN `SIDECAR_PORT`
   and `CONFIG_PATH` env vars (the wrapper hardcodes reading those two names, that is how the
   same script serves two ports): the wrapper is needed because the stock CLI cannot set the
-  sampling temperature. `startSidecars()` starts both in parallel: the DEFAULT language's
-  sidecar MUST come up (failure is fatal, `index.ts` exits); any other language is best-effort —
-  a failed/missing English sidecar only logs an error, and requests for that language get 503
-  (`isLanguageAvailable()` / `languageUnavailableError()` in config.ts gate everything). The wrapper sets
+   sampling temperature. `startSidecars()` starts both in parallel and REQUIRES both sidecars:
+   a failed or missing sidecar for ANY language (including an unavailable one, e.g. local mode
+   with missing model files) is fatal, `index.ts` exits with the collected errors. Both
+   languages are treated equally, there is no best-effort language. Requests still return 503
+   (`langNotReadyError()` in routes/tts.ts, `isSidecarReady(lang)` / `isLanguageAvailable()` /
+   `languageUnavailableError()` in config.ts) if a sidecar's process DIES after a successful
+   startup (`ready` is reset on exit) — that is the only 503 path left at runtime. The wrapper sets
   `pocket_tts.main.tts_model = TTSModel.load_model(config=…, temp=…, quantize=…)` and serves
   the stock `pocket_tts.main:web_app` (same `/health` + `/tts`). The wrapper also REPLACES the
    stock `/tts` route with an interruptible variant: the stock endpoint keeps generating into

@@ -22,8 +22,10 @@ export function openapiSpec() {
         "as soon as it is generated (postprocess=off returns the raw model output). " +
          "Opus output is encoded in the sidecar with libopus (native 24 kHz) at a per-request " +
         "bitrate (default 32 kbps). Optional intentional effects (reverb, echo, EQ, ...) are " +
-        "supported per request. Model files come from Hugging Face by default, or fully locally " +
-        "via the MODEL_DIR env var (see the project README for details). Note: the model has no " +
+         "supported per request. Model files come from Hugging Face by default, or fully locally " +
+         "via the MODEL_DIR / MODEL_DIR_EN env vars (one per language, see the project README for " +
+         "details). Both sidecars are required: the server only starts once every language's " +
+         "model is loaded. Note: the model has no " +
         "per-request speed parameter. The sampling temperature is set at startup via the TEMP env var.",
     },
     servers: [{ url: "/" }],
@@ -602,7 +604,7 @@ export function openapiSpec() {
           required: ["status", "sidecar", "mode", "model_dir", "voices_dir", "temperature", "quantized", "default_language", "languages", "timestamp"],
           properties: {
             status: { type: "string", enum: ["healthy", "degraded"] },
-            sidecar: { type: "boolean", description: "True once the DEFAULT language's sidecar is ready (backwards-compatible)." },
+            sidecar: { type: "boolean", description: "True once every language's sidecar is ready (backwards-compatible)." },
             mode: { type: "string", enum: ["huggingface", "local"] },
             model_dir: { type: ["string", "null"], description: "MODEL_DIR (German) when in local mode, else null." },
             model_dir_en: { type: ["string", "null"], description: "MODEL_DIR_EN (English) when set, else null." },

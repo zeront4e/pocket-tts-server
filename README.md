@@ -8,9 +8,9 @@ Bun-based HTTP server for **PocketTTS** (Kyutai) — high-quality German **and**
 text-to-speech with runtime language switching, voice cloning, streaming, and self-hosted
 Swagger docs.
 
-- **Models:** German 24-layer (`german_24l`, 24 heads, best quality) and English (6-layer)
-  from the ungated mirror [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated)
-  — no HF login needed
+- **Models:** German 24-layer (`german_24l`, 24 transformer layers, best quality) and English
+  (6-layer) from the ungated mirror
+  [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated) — no HF login needed
 - **Languages:** `de` (default) and `en` per request (`lang` field). Each language runs in its
   own sidecar process with its model resident in RAM — switching is instant routing, no reload
 - **Model source:** Hugging Face download (default) **or fully local files, zero downloads**,
@@ -37,8 +37,8 @@ Bun server (port 3001)         Python sidecar DE (8081)   Python sidecar EN (808
 ```
 
 The Bun server spawns **one `scripts/sidecar_wrapper.py` per language** (via `uv run python`)
-in parallel on startup and waits until the German model is loaded (the English sidecar is
-best-effort: its failure degrades but does not stop the server). Requests are routed to the
+in parallel on startup and waits until **both** models are loaded — both sidecars are
+required, if either fails to start the server exits (fatal). Requests are routed to the
 sidecar of their `lang` (`de`/`en`, default from `DEFAULT_LANGUAGE`) — switching languages is
 pure routing, both models stay resident. The wrapper exists because the stock
 `pocket-tts serve` CLI has no temperature option; it sets
@@ -61,8 +61,9 @@ Requires [bun](https://bun.sh) (Node.js not needed).
 The script:
 1. Installs [uv](https://astral.sh/uv/) if missing
 2. Creates a Python 3.12 venv (`.venv/`)
-3. Installs `pocket-tts` (incl. CPU PyTorch), `soundfile` (voice-cloning audio decode) and
-   PyAV `av` (the Ogg/Opus encoder behind `format: "opus"`)
+3. Installs `pocket-tts` (incl. its PyTorch dependency from PyPI — inference still runs on
+   CPU), `soundfile` (voice-cloning audio decode) and PyAV `av` (the Ogg/Opus encoder behind
+   `format: "opus"`)
 4. Downloads the German model (~672 MB) and the English model (~219 MB), cached by
    huggingface_hub after first run
 5. Installs `bun-types`
@@ -87,26 +88,28 @@ bun run src/index.ts
 bun run dev
 ```
 
-Open **http://localhost:3001/** for the demo page (generate, stream with immediate
-playback, regenerate a take, interrupt a running generation with **Stopp**,
-clone a voice from a **file picker**, voice list).
+Open **http://localhost:3001/** for the demo page (generate WAV or Opus, stream with immediate
+playback, stop a running generation, switch DE/EN, pick post-processing / effect / format /
+bitrate, clone a voice from a **file picker**, import an existing voice,
+list / download / delete voices).
 Open **http://localhost:3001/docs** for the Swagger API docs (self-hosted, works offline;
 raw spec at `/openapi.json`).
 
 ### API
 
- | Endpoint             | Method | Body                                                        | Response |
- |----------------------|--------|-------------------------------------------------------------|----------|
- | `/tts`               | POST   | `{"text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus", "bitrate": 32, "postprocess": "auto", "effects": "cathedral"}` (all optional) | `audio/wav` (or `audio/opus` with `format: "opus"`) |
- | `/tts/stream`        | POST   | same                                                        | chunked `audio/wav` / `audio/opus` stream |
- | `/voices`            | GET    | query: `?lang=de|en` (optional)                              | JSON voice list (`{mode, language, voices}`) |
-   | `/voices/clone`      | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional) | JSON |
-   | `/voices/import`     | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional) | JSON (import overwrites an existing name) |
-   | `/voices/download`   | GET    | query: `?name=foo&lang=de|en`                                | `.safetensors` file (custom always; built-ins only in local mode) |
-   | `/voices`            | DELETE | query: `?name=foo&lang=de|en`                                 | JSON (deletes a cloned voice; built-ins are protected) |
- | `/health`            | GET    | —                                                           | JSON (incl. mode, temperature, per-language `languages` status) |
- | `/docs`              | GET    | —                                                           | Swagger UI (self-hosted) |
- | `/openapi.json`      | GET    | —                                                           | OpenAPI 3 spec |
+  | Endpoint             | Method | Body                                                        | Response |
+  |----------------------|--------|-------------------------------------------------------------|----------|
+  | `/`                  | GET    | —                                                           | demo page (HTML) |
+  | `/tts`               | POST   | `{"text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus", "bitrate": 32, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | `audio/wav` (or `audio/opus` with `format: "opus"`) |
+  | `/tts/stream`        | POST   | same                                                        | chunked `audio/wav` / `audio/opus` stream |
+  | `/voices`            | GET    | query: `?lang=de|en` (optional)                              | JSON voice list (`{mode, language, voices}`) |
+  | `/voices/clone`      | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional) | JSON |
+  | `/voices/import`     | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional) | JSON (import overwrites an existing name) |
+  | `/voices/download`   | GET    | query: `?name=foo&lang=de|en`                                | `.safetensors` file (custom always; built-ins only in local mode) |
+  | `/voices`            | DELETE | query: `?name=foo&lang=de|en`                                 | JSON (deletes a cloned voice; built-ins are protected) |
+  | `/health`            | GET    | —                                                           | JSON (incl. mode, temperature, per-language `languages` status) |
+  | `/docs`              | GET    | —                                                           | Swagger UI (self-hosted) |
+  | `/openapi.json`      | GET    | —                                                           | OpenAPI 3 spec |
 
 **Language:** every request takes an optional `lang` field (`de`/`en`, case-insensitive,
 `german`/`english` aliases work). Omit it for the server default (`DEFAULT_LANGUAGE`,
@@ -117,9 +120,9 @@ Voice values: built-in names (`juergen`, `alba`, `estelle`, `giovanni`, `lola`, 
 Omit `voice` for that language's default (German: `juergen`, English: `alba`).
 
 > **Note on speed/variation:** the PocketTTS model has **no per-request speed parameter**
-> (checked against v2.1.0, the latest release). The demo therefore offers a **"Neuer Take"**
-> button — each generation is re-sampled, so takes differ slightly. The base diversity
-> (sampling temperature) is set via the `TEMP` env var at startup.
+> (checked against v2.1.0, the pinned release). Each generation is re-sampled, so generating
+> the same text twice yields slightly different takes. The base diversity (sampling
+> temperature) is set via the `TEMP` env var at startup.
 
 ### Examples
 
@@ -160,7 +163,7 @@ curl -N -X POST http://localhost:3001/tts/stream \
 # EOF
 # The demo page plays the stream chunk-wise (Web Audio) and is unaffected.
 # Generation can be interrupted at any time by killing the request (Ctrl+C
-# here; the demo has a Stopp button) — the server stops at the next chunk.
+# here; the demo has a Stop button) — the server stops at the next chunk.
 
 # With an intentional effect (preset or custom JSON)
 curl -X POST http://localhost:3001/tts \
@@ -184,7 +187,7 @@ chunk onward, adding only a few ms of post-processing per chunk:
 
 - **declick** — removes the leading transient (first chunk only, ~free)
 - **Wiener denoise + online tail gate** — when `postprocess: "full"`, or auto-detected
-  inaudible chunks (noise estimated from the quietest 300 ms window seen so far)
+  inaudible chunks / noise tails (noise estimated from the quietest 300 ms window seen so far)
 - **adaptive leveler** — peak-normalizes each chunk (0.95) and lifts quiet chunks up to ≥ 50 %
   of the loudest chunk seen so far (loudness stays within ~6 dB)
 - **soft limit** — prevents clipping after level-up/effects
@@ -246,10 +249,12 @@ docker compose up -d          # starts it (creates the required tts-data volume)
 
 `docker compose up -d --build` does both in one step. Notes:
 
-- **First start (default HF mode)** downloads both models + voices (~900 MB: German ~672 MB,
-  English ~219 MB) into the `tts-data` volume under `/data/hf`, subsequent starts load from
-  the volume. The container reports `starting` until the German model is loaded (healthcheck
-  start-period is set accordingly; the English sidecar starts best-effort in the background).
+- **First start (default HF mode)** downloads both models + voices (~1 GB: German model
+  ~672 MB, English model ~219 MB, plus tokenizers and voice embeddings) into the `tts-data`
+  volume under `/data/hf`, subsequent starts load from the volume. Both sidecars are required,
+  so `/health` only reports `healthy` once **both** models are loaded (the healthcheck
+  start-period is set accordingly); if either sidecar fails to start, the process exits and
+  the container restarts.
 - **Local mode (no downloads):** place the files from
   [Local model files](#local-model-files-no-hugging-face-download) in the volume as
   `/data/models-de/...` and `/data/models-en/...` and set `MODEL_DIR` / `MODEL_DIR_EN` in
@@ -325,21 +330,24 @@ MODEL_DIR_EN=/path/to/model-dir-en      # optional — omit to keep English on H
 
 A mixed setup (one language local, the other from HF) works: each language resolves its own
 model source. Behavior in local mode (per configured language):
-- The server generates a runtime copy of that language's model config (into the system tmp dir)
-  with `weights_path` and `tokenizer_path` pointing at your local files and passes it to the
-  sidecar. **No Hugging Face requests are ever made** for that language (model, voices, everything).
-- Built-in voices are loaded from `$MODEL_DIR*/embeddings/<name>.safetensors` and uploaded to the
-  sidecar as files (not as `hf://` URLs). A built-in voice whose embedding file you did *not*
+- The server generates a runtime copy of that language's model config (into
+  `<cwd>/.cache/pocket-tts/`) with `weights_path` and `tokenizer_path` pointing at your local
+  files and passes it to the sidecar. **No Hugging Face requests are ever made** for that
+  language (model, voices, everything).
+- Built-in voices are loaded from `$MODEL_DIR*/embeddings/<name>.safetensors` and passed to the
+  sidecar as `voice_path` (absolute path — the sidecar imports each state once and keeps it in
+  memory, no per-request upload). A built-in voice whose embedding file you did *not*
   provide is hidden from `GET /voices?lang=…` and yields a clear error if requested.
 - Voice cloning works identically and stays local.
 - Your own clones in `VOICES_DIR` are unaffected by either mode.
 
 ### Switching language at runtime
 
-Both languages are always available (when configured) — pass `"lang": "de"` or `"lang": "en"`
-on any request (see [API](#api)). There is nothing to reload: each language's model lives in its
-own sidecar process. The default for requests without `lang` is `DEFAULT_LANGUAGE`
-(`de`/`en`, env var). `/health` reports per-language readiness under `languages`.
+Both languages are always available — both sidecars are required at startup (the server exits
+if either fails to load). Pass `"lang": "de"` or `"lang": "en"` on any request (see
+[API](#api)). There is nothing to reload: each language's model lives in its own sidecar
+process. The default for requests without `lang` is `DEFAULT_LANGUAGE` (`de`/`en`, env var).
+`/health` reports per-language readiness under `languages`.
 
 ## Voice cloning
 
@@ -453,13 +461,17 @@ voices/
 
 ## Troubleshooting
 
-- **Slow first start** — both models + voice embeddings download once (~900 MB total), then
-  are cached under `~/.cache/huggingface`. (Not relevant in local mode — nothing downloads.)
+- **Slow first start** — both models + voice embeddings download once (~1 GB total: German
+  ~672 MB, English ~219 MB, plus tokenizers and embeddings), then are cached under
+  `~/.cache/huggingface`. (Not relevant in local mode — nothing downloads.)
 - **`address already in use`** — a previous sidecar is still running:
   `fuser -k 8081/tcp` (German) and `fuser -k 8082/tcp` (English)
-- **English unavailable (`en` requests return 503)** — in local mode `MODEL_DIR_EN` must point
-  at a directory containing `model.safetensors`/`tokenizer.model`; in HF mode the English
-  sidecar may still be starting (see `GET /health` → `languages.en`).
+- **Server fails to start** — both sidecars are required: if either fails to load its model,
+  or (in local mode) its model files are missing (`MODEL_DIR` / `MODEL_DIR_EN` must contain
+  `model.safetensors` and `tokenizer.model`), startup aborts with a fatal error naming the
+  language(s) that failed. Check the `[sidecar:de]` / `[sidecar:en]` log lines.
+- **A language returns 503 at runtime** — only happens if that sidecar's process died after a
+  successful startup; see `GET /health` → `languages.<lang>.ready` and the sidecar logs.
 - **Quantization deprecation warnings in logs** — harmless (PyTorch int8 API notice),
   quantization is intentionally enabled (default `QUANTIZE=1`): ~48 % less RAM, ~27 % faster,
   ~0 WER change.

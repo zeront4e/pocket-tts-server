@@ -122,16 +122,18 @@ async function startSidecar(lang: Lang): Promise<void> {
   console.log(`[sidecar:${lang}] Ready at http://127.0.0.1:${port}`);
 }
 
-// Starts every language that has model files configured. The default language
-// MUST come up (its failure is fatal); any other language is best-effort, a
-// failed (or missing) English sidecar must not take German down with it.
+// Starts every language. BOTH sidecars are required: the server only accepts
+// traffic once every language's model is loaded and warm. A failed (or
+// missing) sidecar for ANY language is fatal, index.ts exits with the
+// collected errors. Both languages start in parallel, so the total startup
+// time is the slowest sidecar, not the sum.
 export async function startSidecars(): Promise<void> {
-  const defaultLang = getDefaultLang();
+  const errors: string[] = [];
 
-  const results = await Promise.all(
+  await Promise.all(
     ALL_LANGS.map(async (lang) => {
       if (!isLanguageAvailable(lang)) {
-        console.log(`[sidecar:${lang}] Skipped, ${languageUnavailableError(lang)}`);
+        errors.push(languageUnavailableError(lang));
         return;
       }
 
@@ -139,11 +141,14 @@ export async function startSidecars(): Promise<void> {
         await startSidecar(lang);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (lang === defaultLang) throw new Error(`Failed to start ${lang} sidecar: ${message}`);
-        console.error(`[sidecar:${lang}] Failed to start (continuing without ${lang}): ${message}`);
+        errors.push(`Failed to start ${lang} sidecar: ${message}`);
       }
     }),
   );
+
+  if (errors.length > 0) {
+    throw new Error(errors.join(" | "));
+  }
 }
 
 // The model's first generation after startup is the worst case for artifacts

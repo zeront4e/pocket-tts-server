@@ -17,7 +17,7 @@ services:
       # Model source, per language (de + en), pick ONE per language:
       #
       # 1) "huggingface" mode (default, nothing to configure):
-      #    On the first start, both models + built-in voices (~900 MB) are
+      #    On the first start, both models + built-in voices (~1 GB) are
       #    downloaded and cached in the volume under /data/hf.
       #
       # 2) "local" mode (no downloads, offline):

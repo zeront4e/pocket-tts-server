@@ -143,7 +143,7 @@ export interface LanguageStatus {
 /** Response of `health`. */
 export interface Health {
   status: "healthy" | "degraded";
-  /** True once the DEFAULT language's sidecar is ready (backwards-compatible). */
+  /** True once every language's sidecar is ready (backwards-compatible). */
   sidecar: boolean;
   mode: "huggingface" | "local";
   model_dir: string | null;
@@ -373,9 +373,10 @@ export function createTtsClient(options: TtsClientOptions = {}): TtsClient {
      * passed `AbortSignal`) aborts the request; the server stops generation at
      * the next chunk boundary, so cancellation is fast and free.
      *
-     * The server generates at most one request at a time in practice, don't
-     * overlap concurrent generations.
-     */
+      * Generation is serialized per language (one sidecar per model): one German and one
+      * English generation can run at the same time, but don't overlap concurrent
+      * generations of the same language.
+      */
     async synthesizeStream({ text, lang, voice, postprocess, effects, format, bitrate, signal }) {
       const upstream = new AbortController();
 
@@ -576,9 +577,9 @@ export function createTtsClient(options: TtsClientOptions = {}): TtsClient {
       },
 
     /**
-     * Health check: returns server + sidecar status, mode, temperature, etc.
-     * `sidecar` is only true once the model has finished loading.
-     */
+      * Health check: returns server + sidecar status, mode, temperature, etc.
+      * `sidecar` is only true once every language's model has finished loading.
+      */
     async health() {
       return getJson<Health>("/health");
     },

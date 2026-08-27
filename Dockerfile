@@ -5,7 +5,7 @@
 #
 # The models are intentionally NOT baked into the image (keeps it minimal).
 #   1. "huggingface" mode (default): first start downloads both models + voices
-#      (~900 MB) into $HF_HOME (/data/hf) and caches them in your volume.
+#      (~1 GB) into $HF_HOME (/data/hf) and caches them in your volume.
 #   2. "local" mode: set MODEL_DIR / MODEL_DIR_EN to directories containing
 #      model.safetensors, tokenizer.model, embeddings/ (see docker-compose.yml).
 
@@ -83,7 +83,8 @@ ENV HOME=/home/tts \
 EXPOSE 3001
 
 # Model load takes 20-60 s per language; the first start in HF mode also
-# downloads both models (~900 MB total).
+# downloads both models + voices (~1 GB total). Both sidecars are required, so
+# the server only reports healthy once every language's model is loaded.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=3 \
     CMD ["bun", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3001) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
