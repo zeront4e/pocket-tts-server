@@ -229,8 +229,9 @@ perceived quality.
   stays in the 0–12 kHz speech band.
 - **Bitrate** — the `bitrate` field (kbps, 6–510, default 32). Server-wide defaults come from
   the `OUTPUT_FORMAT` / `OPUS_BITRATE` env vars; a request-level value wins.
-- **Streaming granularity** — the Ogg muxer flushes ~1 s of media per write, so `/tts/stream`
-  with `format: "opus"` still streams but in ~1 s bursts (the WAV path streams per ~80 ms chunk).
+- **Streaming granularity** — `/tts/stream` with `format: "opus"` streams per ~80 ms chunk, the
+  same as the WAV path. (FFmpeg's Ogg muxer by default only flushes a page after 1 s of media,
+  so the sidecar opens the container with `page_duration=80 ms`.)
   The browser demo decodes Opus incrementally via `decodeAudioData()` on the growing buffer and
   plays audio as it arrives (same Web Audio scheduling as WAV streaming).
 - `postprocess` / `effects` apply identically before encoding (cleanup runs on the PCM, then the

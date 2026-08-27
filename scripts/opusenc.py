@@ -12,13 +12,14 @@
 # straight out through a `push(bytes)` callback (no subprocess, no host
 # ffmpeg binary).
 #
-# Streaming note (PyAV/FFmpeg behaviour, not something we can tune): the Ogg
-# muxer flushes to the file object in ~1-second bursts. The 27-byte-page
-# OpusHead + OpusTags headers are written first, so a client can start decoding
-# as soon as the first ~1 s burst arrives. `buffer_size` on av.open() only
-# changes the size of each write() call, not the burst cadence. This affects
-# /tts/stream granularity only; /tts (non-streaming) is buffered by the proxy
-# regardless.
+# Streaming note: FFmpeg's Ogg muxer only writes a page once it holds at least
+# `page_duration` of media (muxer option, default 1,000,000 µs = 1 s), and it
+# additionally keeps one full page buffered before writing the previous one.
+# Left at the default, /tts/stream + opus would not deliver a single audio byte
+# until ~1 s of media was encoded. We set `page_duration` to 80 ms (one model
+# chunk) so pages flush with per-chunk granularity, like the WAV path.
+# (`buffer_size` on av.open() only changes the size of each write() call, not
+# the flush cadence.)
 
 from fractions import Fraction
 
@@ -84,7 +85,12 @@ class OpusWriter:
         self._buf = np.zeros(0, np.float32)
         self._closed = False
 
-        self._container = av.open(_SinkFile(push), mode="w", format="ogg")
+        # Flush Ogg pages every 80 ms of media instead of the muxer default
+        # (1 s of media per page): otherwise the first audio byte of a
+        # /tts/stream response waits ~1 s behind the headers.
+        self._container = av.open(
+            _SinkFile(push), mode="w", format="ogg", options={"page_duration": "80000"}
+        )
         self._stream = self._container.add_stream("libopus", rate=self._sr, layout="mono")
         self._stream.bit_rate = clamp_bitrate(bitrate)
         self._stream.codec_context.time_base = Fraction(1, self._sr)

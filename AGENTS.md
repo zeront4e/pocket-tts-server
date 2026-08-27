@@ -108,9 +108,12 @@ There is no linter configured. Test endpoints with curl against a running server
     all bitrate in the 0–12 kHz speech band (the source has no content above 12 kHz); upsampled
     48 kHz encoding wastes bits on the empty upper band and causes quantization crackle at low
     bitrates. The decoder still outputs 48 kHz (Opus always decodes to 48 kHz). A `format`/
-    `bitrate` validation error also returns 400 before generation starts. The Ogg muxer flushes
-    ~1 s of media per `write()`, so `/tts/stream` + opus streams in ~1 s bursts (not the ~80 ms
-    WAV granularity), a FFmpeg muxer property, NOT tunable via `av.open(..., buffer_size=...)`.
+    `bitrate` validation error also returns 400 before generation starts. FFmpeg's Ogg muxer only
+    writes a page once it holds at least `page_duration` of media (muxer default: 1 s; it
+    additionally keeps one page buffered before writing the previous one), so `OpusWriter` opens
+    the container with `options={"page_duration": "80000"}` (µs): without it, `/tts/stream` + opus
+    delivers no audio byte for ~1 s after the headers. With it, opus streams with the same ~80 ms
+    per-chunk granularity as WAV.
    **All DSP lives in `scripts/postproc.py` (pure numpy/scipy, no other Python deps).** It fixes
   cold-start artifacts (leading click in the first ~10 ms, inaudible output, noise tails) and
   implements the effects engine. Two twins with the same stages: `process()` (offline, full
@@ -206,9 +209,12 @@ There is no linter configured. Test endpoints with curl against a running server
   (de) and `config/english.yaml` (en), both strict pydantic schema (every key in
   `pocket_tts/config/*.yaml` is validated, so the generated local config just overrides the
   two path fields of a valid config).
- - `/tts/stream` + `format=opus` streams in ~1 s bursts (Ogg muxer flush cadence), not the
-  ~80 ms per-chunk WAV cadence, `av.open(..., buffer_size=...)` only changes the size of each
-  `write()` call, not the cadence (see the `opusenc.py` notes above).
+  - `/tts/stream` + `format=opus` streams with the same ~80 ms per-chunk granularity as WAV:
+   FFmpeg's Ogg muxer by default only flushes a page after 1 s of media (`page_duration`, plus
+   one page kept back), so `OpusWriter` passes `options={"page_duration": "80000"}` to
+   `av.open()` — do NOT remove it, the first audio byte of an opus stream would then wait ~1 s.
+   (`buffer_size` only changes the size of each `write()` call, not the cadence; see the
+   `opusenc.py` notes above.)
 - `/tts/stream` WAV header carries a placeholder data size (PocketTTS streams via
   `StreamingWAVWriter` with `setnframes(1_000_000_000)`; total size unknown while streaming,
   header is never patched). Do NOT "fix" it by buffering the stream in the proxy, that kills
