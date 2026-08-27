@@ -1,0 +1,350 @@
+import { sidecarUrl, isSidecarReady } from "../sidecar.js";
+import {
+  type Lang,
+  getDefaultLang,
+  normalizeLang,
+  isLanguageAvailable,
+  languageUnavailableError,
+  isBuiltinVoice,
+  isLocalMode,
+  builtinVoiceUrl,
+  builtinVoiceLocalPath,
+  defaultVoiceFor,
+  customVoicePath,
+  getModelDir,
+  getPostprocessDefault,
+  getOutputFormat,
+  getOpusBitrate,
+} from "../config.js";
+
+export type EffectsParam = string | Array<Record<string, unknown>>;
+
+export type OutputFormat = "wav" | "opus";
+
+export interface TtsRequest {
+  text?: string;
+  voice?: string;
+  lang?: string;
+  postprocess?: string;
+  effects?: EffectsParam;
+  format?: string;
+  bitrate?: number;
+}
+
+// Resolves the `lang` request field to a language: an explicit value wins
+// (case-insensitive, accepts "de"/"german" and "en"/"english"), otherwise the
+// server default (DEFAULT_LANGUAGE env var). Throws (→ 400) on unknown values.
+export function resolveLang(requested?: string | null): Lang {
+  if (requested === undefined || requested === null || requested.trim() === "") return getDefaultLang();
+  const lang = normalizeLang(requested);
+  if (!lang) throw new Error("Field 'lang' must be 'de' or 'en'");
+  return lang;
+}
+
+export function resolveVoice(
+  voice: string | undefined,
+  lang: Lang,
+): { url?: string; file?: { path: string; name: string } } {
+  const selectedVoice = (voice || defaultVoiceFor(lang)).trim();
+
+  if (isBuiltinVoice(selectedVoice) && !isLocalMode(lang)) {
+    // HF mode: the language's own embedding of the built-in voice.
+    return { url: builtinVoiceUrl(selectedVoice, lang) };
+  }
+
+  // Local mode: built-in names use the language's MODEL_DIR*/embeddings,
+  // falling back to a same-named clone in the language's VOICES_DIR area;
+  // custom names resolve directly to the language's custom-voice dir.
+  const localPath = customVoicePath(selectedVoice, lang);
+
+  const builtinLocal =
+    isLocalMode(lang) && isBuiltinVoice(selectedVoice) ? builtinVoiceLocalPath(selectedVoice, lang) : null;
+
+  if (builtinLocal && Bun.file(builtinLocal).size > 0) {
+    return { file: { path: builtinLocal, name: `${selectedVoice}.safetensors` } };
+  }
+
+  if (Bun.file(localPath).size > 0) {
+    return { file: { path: localPath, name: `${selectedVoice}.safetensors` } };
+  }
+
+  if (builtinLocal) {
+    throw new Error(
+      `Voice "${selectedVoice}" is built-in but its local embedding is missing: ${builtinLocal}. ` +
+        `Copy voice embeddings into ${getModelDir(lang)}/embeddings/ or clone it with a name without a built-in clash.`,
+    );
+  }
+
+  throw new Error(
+    `Voice "${selectedVoice}" not found (language "${lang}"). Use GET /voices?lang=${lang} to see available voices.`,
+  );
+}
+
+function buildForm(body: TtsRequest, lang: Lang): { formData: FormData; format: OutputFormat } {
+  const formData = new FormData();
+
+  formData.append("text", body.text!.trim());
+
+  const { url, file } = resolveVoice(body.voice, lang);
+
+  if (url) {
+    formData.append("voice_url", url);
+  } else if (file) {
+    // Local .safetensors voice state: send the absolute path and let the
+    // sidecar import + cache it in memory, instead of uploading the ~74 MB
+    // state on every request (the single biggest first-chunk cost for custom
+    // voices). The sidecar runs as a local child process, so the path is valid
+    // for it.
+    formData.append("voice_path", file.path);
+  }
+
+  const postprocess = (body.postprocess ?? getPostprocessDefault()).trim().toLowerCase();
+
+  if (!["auto", "full", "off"].includes(postprocess)) {
+    throw new Error("Field 'postprocess' must be 'auto', 'full', or 'off'");
+  }
+
+  formData.append("postprocess", postprocess);
+
+  const effects = body.effects;
+
+  if (effects !== undefined && effects !== "") {
+    if (typeof effects === "string") {
+      formData.append("effects", effects);
+    } else if (Array.isArray(effects)) {
+      formData.append("effects", JSON.stringify(effects));
+    } else {
+      throw new Error("Field 'effects' must be a preset name (string) or an array of effect objects");
+    }
+  }
+
+  const format = (body.format ?? getOutputFormat()).trim().toLowerCase() as OutputFormat;
+
+  if (format !== "wav" && format !== "opus") {
+    throw new Error("Field 'format' must be 'wav' or 'opus'");
+  }
+
+  formData.append("format", format);
+
+  // Bitrate is only used for opus, but always resolved + sent so the env default
+  // (OPUS_BITRATE) is honored. Request-level value wins; clamped to [6, 510] kbps.
+  let bitrate = getOpusBitrate();
+
+  if (body.bitrate !== undefined) {
+    const b = Number(body.bitrate);
+
+    if (!Number.isFinite(b)) {
+      throw new Error("Field 'bitrate' must be a number (kbps)");
+    }
+
+    bitrate = Math.round(b);
+  }
+
+  if (bitrate < 6 || bitrate > 510) {
+    throw new Error("Field 'bitrate' must be between 6 and 510 (kbps)");
+  }
+
+  formData.append("bitrate", String(bitrate));
+
+  return { formData, format };
+}
+
+// 503 when the language cannot serve right now (not configured, or its
+// sidecar is still loading). null when the language is ready.
+function langNotReadyError(lang: Lang): Response | null {
+  if (!isLanguageAvailable(lang)) {
+    return jsonError(503, languageUnavailableError(lang));
+  }
+
+  if (!isSidecarReady(lang)) {
+    return jsonError(503, `TTS sidecar for language "${lang}" not ready`);
+  }
+
+  return null;
+}
+
+export async function ttsGenerate(request: Request): Promise<Response> {
+  const body = await request.json().catch(() => null) as TtsRequest | null;
+
+  if (!body?.text?.trim()) {
+    return jsonError(400, "Field 'text' is required");
+  }
+
+  let lang: Lang;
+
+  try {
+    lang = resolveLang(body.lang);
+  } catch (error) {
+    return jsonError(400, error instanceof Error ? error.message : "Invalid request");
+  }
+
+  const notReady = langNotReadyError(lang);
+
+  if (notReady) return notReady;
+
+  try {
+    const { formData, format } = buildForm(body, lang);
+
+    const res = await fetch(sidecarUrl(lang, "/tts"), {
+      method: "POST",
+      body: formData,
+      signal: clientAbortSignal(request),
+    });
+
+    const sidecarErr = await sidecarError(res);
+
+    if (sidecarErr) return sidecarErr;
+
+    let buffer = Buffer.from(await res.arrayBuffer());
+
+    if (format === "wav") {
+      buffer = patchWavHeader(buffer);
+    }
+
+    const ext = format === "opus" ? "opus" : "wav";
+
+    return new Response(buffer, {
+      headers: {
+        "Content-Type": format === "opus" ? "audio/opus" : "audio/wav",
+        "Content-Length": String(buffer.length),
+        "Content-Disposition": `attachment; filename="speech.${ext}"`,
+      },
+    });
+  } catch (error) {
+    return jsonError(400, error instanceof Error ? error.message : "Invalid request");
+  }
+}
+
+export async function ttsStream(request: Request): Promise<Response> {
+  const body = await request.json().catch(() => null) as TtsRequest | null;
+
+  if (!body?.text?.trim()) {
+    return jsonError(400, "Field 'text' is required");
+  }
+
+  let lang: Lang;
+
+  try {
+    lang = resolveLang(body.lang);
+  } catch (error) {
+    return jsonError(400, error instanceof Error ? error.message : "Invalid request");
+  }
+
+  const notReady = langNotReadyError(lang);
+
+  if (notReady) return notReady;
+
+  try {
+    const { formData, format } = buildForm(body, lang);
+    const upstream = new AbortController();
+    const clientSignal = clientAbortSignal(request);
+    if (clientSignal) {
+      if (clientSignal.aborted) upstream.abort();
+      else clientSignal.addEventListener("abort", () => upstream.abort(), { once: true });
+    }
+    const res = await fetch(sidecarUrl(lang, "/tts"), {
+      method: "POST",
+      body: formData,
+      signal: upstream.signal,
+    });
+    if (!res.ok) {
+      upstream.abort();
+
+      const err = await sidecarError(res);
+
+      return err ?? jsonError(502, "Sidecar error");
+    }
+
+    const reader = res.body?.getReader();
+
+    if (!reader) {
+      upstream.abort();
+
+      return jsonError(502, "No stream body from sidecar");
+    }
+
+    const stream = new ReadableStream({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            controller.close();
+            return;
+          }
+
+          controller.enqueue(value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      // Client aborted (or dropped the connection): abort the sidecar fetch so
+      // the sidecar sees the disconnect and stops generation.
+      cancel() {
+        upstream.abort();
+
+        reader.cancel().catch(() => {});
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": format === "opus" ? "audio/opus" : "audio/wav",
+        "X-Streaming": "true",
+      },
+    });
+  } catch (error) {
+    return jsonError(400, error instanceof Error ? error.message : "Invalid request");
+  }
+}
+
+// The sidecar streams WAV through an unseekable queue, so its header carries a
+// 1_000_000_000-frame placeholder. /tts buffers the full file, so fix that here
+// (RIFF size + data size). The layout is the standard 44-byte PCM header —
+// there is no sample-count field, so only the two size fields are touched
+// (writing past dataOffset+8 would clobber the first PCM samples).
+function patchWavHeader<T extends Buffer>(buf: T): T {
+  if (buf.length < 44) return buf;
+
+  if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") return buf;
+
+  const dataOffset = buf.indexOf(Buffer.from("data"), 12);
+
+  if (dataOffset < 0 || dataOffset + 8 > buf.length) return buf;
+
+  const dataSize = buf.length - (dataOffset + 8);
+
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.writeUInt32LE(dataSize, dataOffset + 4);
+
+  return buf;
+}
+
+// AbortSignal that fires when the browser/client goes away (Bun.serve sets
+// Request.signal for that). Returns undefined if the runtime does not provide it.
+function clientAbortSignal(req: Request): AbortSignal | undefined {
+  return req.signal;
+}
+
+// Map a failed sidecar response to a client response: 400s are validation
+// errors from the sidecar (e.g. bad effects) and stay 400; everything else
+// is a 502. Returns null for successful responses.
+async function sidecarError(res: Response): Promise<Response | null> {
+  if (res.ok) return null;
+
+  const text = await res.text();
+
+  let message = `Sidecar error: ${text}`;
+
+  if (res.status === 400) {
+    const detail = (JSON.parse(text || "{}") as { detail?: string }).detail;
+
+    message = detail || text || "Invalid request";
+  }
+
+  return jsonError(res.status === 400 ? 400 : 502, message);
+}
+
+function jsonError(status: number, message: string): Response {
+  return Response.json({ error: message }, { status });
+}

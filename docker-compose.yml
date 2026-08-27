@@ -1,0 +1,54 @@
+# PocketTTS server, Docker Compose example
+#
+#   docker compose up -d --build
+#
+# A volume is REQUIRED: it persists cloned voices, the downloaded Hugging Face
+# model cache, and (in local mode) your model files.
+
+services:
+  tts:
+    build: .
+    image: pocket-tts-server:latest
+    container_name: pocket-tts
+    ports:
+      - "3001:3001" # change the left side to publish on another host port
+    environment:
+      # ------------------------------------------------------------------
+      # Model source, per language (de + en), pick ONE per language:
+      #
+      # 1) "huggingface" mode (default, nothing to configure):
+      #    On the first start, both models + built-in voices (~900 MB) are
+      #    downloaded and cached in the volume under /data/hf.
+      #
+      # 2) "local" mode (no downloads, offline):
+      #    Put each language's model files into the volume (or a bind-mounted
+      #    host dir):
+      #        /data/models-de/model.safetensors
+      #        /data/models-de/tokenizer.model
+      #        /data/models-de/embeddings/<voice>.safetensors   (optional)
+      #        /data/models-en/model.safetensors
+      #        /data/models-en/tokenizer.model
+      #        /data/models-en/embeddings/<voice>.safetensors   (optional)
+      #    ... and uncomment (either may be omitted to keep that language on
+      #    Hugging Face):
+      # ------------------------------------------------------------------
+      # MODEL_DIR: /data/models-de
+      # MODEL_DIR_EN: /data/models-en
+      TEMP: "0.5" # sampling temperature / diversity (restart required)
+      QUANTIZE: "1" # "1" = int8 quantization (less RAM), "0" = off
+    volumes:
+      # REQUIRED, persistent data (cloned voices, HF model cache, and
+      # optional local model files under /data/models):
+      - tts-data:/data
+      # Alternative: bind-mount a host directory instead of a named volume
+      # (useful for local mode, just copy your model files into ./data/models):
+      # - ./data:/data
+    restart: unless-stopped
+    # The model runs on CPU, make sure the container can use enough cores,
+    # e.g.:
+    # deploy:
+    #   resources:
+    #     cpus: "8"
+
+volumes:
+  tts-data:

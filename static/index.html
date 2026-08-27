@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/jpeg" href="/icon.jpg">
+  <link rel="apple-touch-icon" href="/icon.jpg">
+  <title>PocketTTS Server - DE/EN</title>
+  <style>
+    :root {
+      --bg: #0c0e1b;
+      --panel: #151930;
+      --panel-2: #20263f;
+      --border: #2b3151;
+      --border-2: #3d4570;
+      --text: #eae6d9;
+      --muted: #9299b5;
+      --accent: #45b6c4;
+      --accent-hi: #63d2de;
+      --on-accent: #0a1220;
+      --pink: #ff5c86;
+      --green: #71c48f;
+      --red: #ff6259;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      background-image:
+        radial-gradient(1100px 550px at 85% -10%, rgba(69, 182, 196, 0.08), transparent 65%),
+        radial-gradient(900px 500px at 5% 110%, rgba(255, 92, 134, 0.06), transparent 65%);
+      background-attachment: fixed;
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    .header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem; }
+    .header img {
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      box-shadow: 0 0 24px rgba(69, 182, 196, 0.2);
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--muted); margin-bottom: 1rem; font-size: 0.9rem; }
+    .mode-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-bottom: 2rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .mode-badge {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 0.25rem 0.8rem;
+      font-size: 0.75rem;
+    }
+    .mode-badge.local { border-color: rgba(113, 196, 143, 0.45); color: #9adfb4; }
+    .mode-badge.hf { border-color: rgba(255, 92, 134, 0.45); color: #ff9dbb; }
+    .lang-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden;
+    }
+    .lang-btn {
+      background: var(--panel);
+      border: none;
+      color: var(--muted);
+      padding: 0.25rem 0.85rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .lang-btn.active { background: var(--accent); color: var(--on-accent); }
+    .lang-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .links { display: flex; gap: 1rem; }
+    .links a { color: var(--accent-hi); text-decoration: none; }
+    .links a:hover { text-decoration: underline; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .card h2 {
+      font-size: 1rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 0.65rem 0.85rem;
+      font-size: 0.95rem;
+      font-family: inherit;
+      margin-bottom: 0.75rem;
+    }
+    textarea { resize: vertical; min-height: 80px; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    input[type="file"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 0.85rem;
+      font-size: 0.85rem;
+      margin-bottom: 0.75rem;
+    }
+    input[type="file"]::file-selector-button {
+      background: var(--panel-2);
+      color: var(--text);
+      border: none;
+      border-radius: 6px;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+      margin-right: 0.75rem;
+    }
+    input[type="file"]::file-selector-button:hover { background: var(--border-2); }
+    input[type="file"]:focus { outline: none; border-color: var(--accent); }
+    .btn-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+    button {
+      background: var(--accent);
+      color: var(--on-accent);
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.2rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+    button:hover { background: var(--accent-hi); }
+    button:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }
+    button.secondary { background: var(--panel-2); color: var(--text); }
+    button.secondary:hover { background: var(--border-2); }
+    .status {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      min-height: 1.2em;
+    }
+    .status.error { color: var(--red); }
+    .status.success { color: var(--green); }
+    audio { width: 100%; margin-top: 0.75rem; }
+    .docs-text { font-size: 0.9rem; color: var(--text); line-height: 1.6; }
+    .docs-text a { color: var(--accent-hi); text-decoration: none; }
+    .docs-text a:hover { text-decoration: underline; }
+    .docs-text code { color: var(--accent-hi); }
+    .voices-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .voice-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--panel-2);
+      border-radius: 20px;
+      padding: 0.25rem 0.75rem;
+      font-size: 0.8rem;
+    }
+    .voice-tag.builtin { border: 1px solid rgba(69, 182, 196, 0.4); }
+    .voice-tag.custom { border: 1px solid rgba(113, 196, 143, 0.45); background: #16281f; }
+    .voice-actions { display: inline-flex; gap: 0.3rem; }
+    .icon-btn {
+      background: transparent;
+      border-radius: 6px;
+      padding: 0.1rem 0.55rem;
+      font-size: 0.7rem;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+    .icon-btn.download {
+      border: 1px solid rgba(69, 182, 196, 0.6);
+      color: #8fdbe6;
+    }
+    .icon-btn.download:hover { background: rgba(69, 182, 196, 0.15); border-color: var(--accent); color: #c2eef4; }
+    .icon-btn.danger {
+      border: 1px solid rgba(255, 92, 134, 0.6);
+      color: #ff9dbb;
+    }
+    .icon-btn.danger:hover { background: rgba(255, 92, 134, 0.15); border-color: var(--pink); color: #ffc6d6; }
+    .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .voices-hint { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.75rem; }
+    .section-title {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 0 0 0.75rem;
+    }
+    .divider { height: 1px; background: var(--border); margin: 1.25rem 0; }
+    button.danger { background: var(--pink); }
+    button.danger:hover { background: #ff7b9d; }
+    button.danger:disabled { background: #46243a; color: var(--muted); cursor: not-allowed; }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 7, 14, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      max-width: 440px;
+      width: calc(100% - 3rem);
+    }
+    .modal-box h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .modal-box p { font-size: 0.9rem; color: var(--muted); margin-bottom: 1.25rem; line-height: 1.5; }
+    .modal-buttons { display: flex; gap: 0.75rem; justify-content: flex-end; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="/icon.jpg" alt="PocketTTS Server icon" width="64" height="64">
+      <div>
+        <h1>PocketTTS Server</h1>
+        <p class="subtitle">German 24l + English models (ungated) &mdash; 24kHz mono &mdash; streaming + voice cloning</p>
+      </div>
+    </div>
+
+    <div class="mode-bar" id="modeBar">
+      <span class="mode-badge" id="modeBadge">Loading status&hellip;</span>
+      <span class="lang-toggle" role="group" aria-label="Language">
+        <button type="button" class="lang-btn" id="langDe" onclick="setLang('de')">DE</button>
+        <button type="button" class="lang-btn" id="langEn" onclick="setLang('en')">EN</button>
+      </span>
+      <span id="modeDetails"></span>
+      <span class="links">
+        <a href="/docs">API docs (Swagger)</a>
+        <a href="/openapi.json">openapi.json</a>
+      </span>
+    </div>
+
+    <div class="card">
+      <h2>Text-to-Speech</h2>
+      <label for="text">Text</label>
+      <textarea id="text">Dieser Server kann aus Text deutsche Sprache generieren. Geben Sie Ihren eigenen Text ein, wählen Sie eine Stimme aus und laden Sie anschließend die resultierende Audiodatei herunter oder spielen Sie sie direkt hier ab.</textarea>
+
+      <label for="voice">Voice</label>
+      <select id="voice"></select>
+      <label for="postprocess">Post-Processing (Cleanup)</label>
+      <select id="postprocess">
+        <option value="auto" selected>Auto (default) &mdash; Clicks/noise removal, normalize</option>
+        <option value="full">Full &mdash; Denoise + tail gate</option>
+        <option value="off">Off &mdash; raw model audio</option>
+      </select>
+      <label for="effects">Effect</label>
+      <select id="effects">
+        <option value="none" selected>None</option>
+        <option value="cathedral">Cathedral (Hall)</option>
+        <option value="broadcast">Broadcast (Radio)</option>
+        <option value="phone">Phone</option>
+        <option value="robot">Robot</option>
+        <option value="custom">Custom (JSON)</option>
+      </select>
+      <textarea id="effectsJson" class="hidden" placeholder='e.g. [{"type":"reverb","wet":0.4},{"type":"eq","freq":3000,"gain_db":2,"kind":"peaking"}]' style="min-height:60px; font-family:monospace; font-size:0.8rem;"></textarea>
+      <div class="btn-row" style="gap:1.25rem; margin-bottom:0.75rem;">
+        <div style="flex:1 1 40%;">
+          <label for="format">Format</label>
+          <select id="format">
+            <option value="wav" selected>WAV (16-bit PCM, 24 kHz)</option>
+            <option value="opus">Opus (Ogg, 48 kHz)</option>
+          </select>
+        </div>
+        <div id="bitrateWrap" class="hidden" style="flex:1 1 40%;">
+          <label for="bitrate">Bitrate (Opus, kbps)</label>
+          <select id="bitrate">
+        <option value="16">16 (very compact)</option>
+        <option value="32" selected>32 (default)</option>
+        <option value="64">64</option>
+        <option value="96">96 (high)</option>
+        <option value="128">128 (very high)</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btnGenerate" onclick="generateAudio()">Generate (WAV)</button>
+        <button id="btnStream" class="secondary" onclick="streamAudio()">Stream</button>
+        <button id="btnStop" class="secondary hidden" onclick="onStopClick()" title="Currently running: stop generation/playback immediately (the server stops generating at the next chunk)">
+          &#9632; Stop
+        </button>
+      </div>
+      <div id="ttsStatus" class="status"></div>
+      <div id="audioContainer" class="hidden">
+        <audio id="player" controls></audio>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Voice Cloning &amp; Import</h2>
+      <h3 class="section-title">Clone from Reference Audio</h3>
+      <label for="voiceName">Voice Name</label>
+      <input type="text" id="voiceName" placeholder="my_voice">
+      <label for="voiceFile">Reference Audio &mdash; choose a file (WAV/MP3, 5&ndash;30s, clean solo speech)</label>
+      <input type="file" id="voiceFile" accept="audio/*,.wav,.mp3">
+      <div class="btn-row">
+        <button id="btnClone" onclick="cloneVoice()">Clone Voice</button>
+      </div>
+      <div id="cloneStatus" class="status"></div>
+
+      <div class="divider"></div>
+
+      <h3 class="section-title">Import Existing Voice</h3>
+      <p class="voices-hint">Upload a .safetensors voice file (e.g. one downloaded from another server) to make it available here.</p>
+      <label for="importName">Voice Name</label>
+      <input type="text" id="importName" placeholder="my_voice">
+      <label for="importFile">Voice File (.safetensors)</label>
+      <input type="file" id="importFile" accept=".safetensors">
+      <div class="btn-row">
+        <button id="btnImport" onclick="importVoice()">Import Voice</button>
+      </div>
+      <div id="importStatus" class="status"></div>
+    </div>
+
+    <div class="card">
+      <h2>Available Voices</h2>
+      <p class="voices-hint">Cloned voices can be downloaded and deleted. Built-in voices are only downloadable in local mode (MODEL_DIR set).</p>
+      <div id="voicesList" class="voices-list">Loading...</div>
+      <div id="voicesStatus" class="status"></div>
+    </div>
+
+    <div class="card">
+      <h2>API Documentation</h2>
+      <p class="docs-text">
+        Full API reference (all endpoints, request/response schemas, examples) is available as
+        interactive Swagger documentation at <a href="/docs"><code>/docs</code></a>.
+        The raw OpenAPI 3 spec is served at <a href="/openapi.json"><code>/openapi.json</code></a>.
+      </p>
+    </div>
+  </div>
+
+  <div id="confirmOverlay" class="modal-overlay hidden" onclick="onOverlayClick(event)">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle">Delete Voice</h3>
+      <p id="confirmText"></p>
+      <div class="modal-buttons">
+        <button id="btnConfirmCancel" class="secondary" onclick="closeConfirm()">Cancel</button>
+        <button id="btnConfirmDelete" class="danger" onclick="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE = window.location.origin;
+
+    // Current synthesis language. Initialized from /health (the server's
+    // DEFAULT_LANGUAGE); switching is pure client state, both models are
+    // resident on the server, so a switch takes effect on the next request.
+    let currentLang = null;
+
+    const SAMPLE_TEXTS = {
+      de: "Dieser Server kann aus Text deutsche Sprache generieren. Geben Sie Ihren eigenen Text ein, wählen Sie eine Stimme aus und laden Sie anschließend die resultierende Audiodatei herunter oder spielen Sie sie direkt hier ab.",
+      en: "This server generates English speech from text. Type in your own text, pick a voice, then download the resulting audio file or play it right here.",
+    };
+
+    // Element id of a language toggle button ("de" -> "langDe").
+    function langBtnId(code) {
+      return `lang${code[0].toUpperCase()}${code[1]}`;
+    }
+
+    function refreshLangToggle() {
+      for (const code of ["de", "en"]) {
+        document.getElementById(langBtnId(code)).classList.toggle("active", currentLang === code);
+      }
+    }
+
+    // Replace the sample text only when it is still the untouched sample.
+    function applySampleText(lang) {
+      const text = document.getElementById("text");
+      const other = lang === "de" ? "en" : "de";
+      if (text.value.trim() === SAMPLE_TEXTS[other] || text.value.trim() === "") {
+        text.value = SAMPLE_TEXTS[lang];
+      }
+    }
+
+    function setLang(lang) {
+      if (!lang || currentLang === lang) return;
+      currentLang = lang;
+      refreshLangToggle();
+      applySampleText(lang);
+      loadVoices();
+    }
+
+    async function loadState() {
+      try {
+        const res = await fetch(`${BASE}/health`);
+        const data = await res.json();
+        const badge = document.getElementById("modeBadge");
+        const details = document.getElementById("modeDetails");
+        const local = data.mode === "local";
+        badge.textContent = local ? "Mode: LOCAL FILES" : "Mode: HUGGING FACE";
+        badge.className = `mode-badge ${local ? "local" : "hf"}`;
+        const bits = [];
+        if (local) bits.push(`MODEL_DIR: ${data.model_dir}`);
+        if (data.model_dir_en) bits.push(`MODEL_DIR_EN: ${data.model_dir_en}`);
+        bits.push(`Temp: ${data.temperature}`);
+        bits.push(data.quantized ? "int8" : "no quantization");
+        for (const code of ["de", "en"]) {
+          const ls = (data.languages || {})[code];
+          if (!ls) continue;
+          if (!ls.available) {
+            document.getElementById(langBtnId(code)).disabled = true;
+            bits.push(`${code.toUpperCase()}: not configured`);
+          } else {
+            document.getElementById(langBtnId(code)).disabled = false;
+            bits.push(`${code.toUpperCase()}: ${ls.ready ? "ready" : "loading..."}`);
+          }
+        }
+        if (!currentLang) currentLang = data.default_language || "de";
+        if (!(data.languages || {})[currentLang]?.available) {
+          const fallback = Object.keys(data.languages || {}).find((k) => data.languages[k].available);
+          if (fallback) currentLang = fallback;
+        }
+        refreshLangToggle();
+        applySampleText(currentLang);
+        details.textContent = bits.join(" · ");
+        loadVoices();
+      } catch (e) {
+        document.getElementById("modeBadge").textContent = "Status unavailable";
+      }
+    }
+
+    let voicesMode = "huggingface";
+
+    async function loadVoices() {
+      if (!currentLang) return; // /health not loaded yet
+      try {
+        const res = await fetch(`${BASE}/voices?lang=${currentLang}`);
+        const data = await res.json();
+        const sel = document.getElementById("voice");
+        const list = document.getElementById("voicesList");
+        const previous = sel.value;
+        voicesMode = data.mode === "local" ? "local" : "huggingface";
+        sel.innerHTML = "";
+        list.innerHTML = "";
+        for (const v of data.voices) {
+          const opt = document.createElement("option");
+          opt.value = v.name;
+          opt.textContent = `${v.name} (${v.language || v.type})`;
+          sel.appendChild(opt);
+          const tag = document.createElement("span");
+          tag.className = `voice-tag ${v.type}`;
+          const nameEl = document.createElement("span");
+          nameEl.textContent = v.name;
+          tag.appendChild(nameEl);
+          const canDownload = v.type === "custom" || voicesMode === "local";
+          const canDelete = v.type === "custom";
+          if (canDownload || canDelete) {
+            const actions = document.createElement("span");
+            actions.className = "voice-actions";
+            if (canDownload) {
+              const dl = document.createElement("button");
+              dl.className = "icon-btn download";
+              dl.textContent = "Download";
+              dl.title = `Download ${v.name}.safetensors`;
+              dl.onclick = () => downloadVoice(v.name);
+              actions.appendChild(dl);
+            }
+            if (canDelete) {
+              const del = document.createElement("button");
+              del.className = "icon-btn danger";
+              del.textContent = "Delete";
+              del.title = `Delete the cloned voice ${v.name}`;
+              del.onclick = () => askDelete(v.name);
+              actions.appendChild(del);
+            }
+            tag.appendChild(actions);
+          }
+          list.appendChild(tag);
+        }
+        // Preserve the user's selection across periodic refreshes
+        if ([...sel.options].some(o => o.value === previous)) sel.value = previous;
+      } catch (e) {
+        document.getElementById("voicesList").textContent = "Error loading voices";
+      }
+    }
+
+    function downloadVoice(name) {
+      const a = document.createElement("a");
+      a.href = `${BASE}/voices/download?name=${encodeURIComponent(name)}&lang=${currentLang}`;
+      a.download = `${name}.safetensors`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus("voicesStatus", `Downloading ${name}.safetensors...`, "success");
+    }
+
+    let pendingDelete = null;
+
+    function askDelete(name) {
+      pendingDelete = name;
+      document.getElementById("confirmText").textContent =
+        `Delete the cloned voice "${name}"? This permanently removes ${name}.safetensors from the server and cannot be undone.`;
+      document.getElementById("btnConfirmDelete").disabled = false;
+      document.getElementById("confirmOverlay").classList.remove("hidden");
+      document.getElementById("btnConfirmCancel").focus();
+    }
+
+    function closeConfirm() {
+      pendingDelete = null;
+      document.getElementById("confirmOverlay").classList.add("hidden");
+    }
+
+    function onOverlayClick(event) {
+      if (event.target === event.currentTarget) closeConfirm();
+    }
+
+    async function confirmDelete() {
+      if (!pendingDelete) return;
+      const name = pendingDelete;
+      const btn = document.getElementById("btnConfirmDelete");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${BASE}/voices?name=${encodeURIComponent(name)}&lang=${currentLang}`, { method: "DELETE" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        closeConfirm();
+        setStatus("voicesStatus", `Voice "${name}" deleted.`, "success");
+        loadVoices();
+      } catch (e) {
+        closeConfirm();
+        setStatus("voicesStatus", `Error deleting "${name}": ${e.message}`, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !document.getElementById("confirmOverlay").classList.contains("hidden")) {
+        closeConfirm();
+      }
+    });
+
+    function setStatus(id, msg, cls = "") {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.className = `status ${cls}`;
+    }
+
+    function setBusy(id, busy) {
+      document.getElementById(id).disabled = busy;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Interrupt: one active request at a time; Stopp aborts the fetch
+     * (server stops generation at the next chunk) and stops playback.
+     * ------------------------------------------------------------------ */
+    let activeAbort = null;   // AbortController of the running request
+    let objectUrl = null;
+
+    // Stream playback state (chunk-wise Web Audio, see streamAudio)
+    let streamCtx = null;     // AudioContext of the running stream
+    let streamSources = new Set();
+    let streamEndAt = 0;      // AudioContext time when last scheduled audio ends
+    let streamStopTimer = null;
+
+    function setStopVisible(v) {
+      document.getElementById("btnStop").classList.toggle("hidden", !v);
+    }
+
+    function stopStreamAudio() {
+      clearTimeout(streamStopTimer);
+      for (const s of streamSources) { try { s.stop(); } catch (e) {} }
+      streamSources.clear();
+      if (streamCtx) { streamCtx.close().catch(() => {}); streamCtx = null; }
+    }
+
+    function abortActive() {
+      if (activeAbort) { try { activeAbort.abort(); } catch (e) {} activeAbort = null; }
+      stopStreamAudio();
+      document.getElementById("player").pause();
+      setBusy("btnGenerate", false);
+      setBusy("btnStream", false);
+      setStopVisible(false);
+    }
+
+    function onStopClick() {
+      abortActive();
+      setStatus("ttsStatus", "Stopped.");
+    }
+
+    function playBlob(blob) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = URL.createObjectURL(blob);
+      const player = document.getElementById("player");
+      player.src = objectUrl;
+      document.getElementById("audioContainer").classList.remove("hidden");
+    }
+
+    function buildTtsBody() {
+      const text = document.getElementById("text").value.trim();
+      const voice = document.getElementById("voice").value;
+      if (!text) throw new Error("Text must not be empty.");
+      const body = {
+        text,
+        voice,
+        postprocess: document.getElementById("postprocess").value,
+        format: document.getElementById("format").value,
+      };
+      if (currentLang) body.lang = currentLang;
+      if (body.format === "opus") {
+        body.bitrate = parseInt(document.getElementById("bitrate").value, 10);
+      }
+      const effSel = document.getElementById("effects").value;
+      if (effSel === "custom") {
+        const json = document.getElementById("effectsJson").value.trim();
+        if (!json) return body;
+        let parsed;
+        try { parsed = JSON.parse(json); } catch (e) { throw new Error("Effect JSON is invalid: " + e.message); }
+        body.effects = parsed;
+      } else if (effSel !== "none") {
+        body.effects = effSel;
+      }
+      return body;
+    }
+
+    function currentFormat() {
+      return document.getElementById("format").value;
+    }
+
+    // Keep the button labels in sync with the selected format.
+    function refreshFormatLabels() {
+      const f = currentFormat() === "opus" ? "OPUS" : "WAV";
+      document.getElementById("btnGenerate").textContent = `Generate (${f})`;
+      document.getElementById("btnStream").textContent = `Stream (${f})`;
+      document.getElementById("bitrateWrap").classList.toggle("hidden", currentFormat() !== "opus");
+    }
+
+    async function postTts(path, signal) {
+      const body = buildTtsBody();
+      const res = await fetch(`${BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      return res;
+    }
+
+    async function generateAudio() {
+      abortActive();
+      setBusy("btnGenerate", true);
+      setStopVisible(true);
+      setStatus("ttsStatus", "Generating...");
+      const start = performance.now();
+      activeAbort = new AbortController();
+      try {
+        const res = await postTts("/tts", activeAbort.signal);
+        const blob = await res.blob();
+        playBlob(blob);
+        const fmtLabel = currentFormat() === "opus" ? "OPUS" : "WAV";
+        setStatus("ttsStatus", `${fmtLabel} ready in ${(performance.now() - start).toFixed(0)}ms (${(blob.size / 1024).toFixed(0)} KB)`, "success");
+      } catch (e) {
+        if (e.name === "AbortError") setStatus("ttsStatus", "Aborted.", "");
+        else setStatus("ttsStatus", `Error: ${e.message}`, "error");
+      } finally {
+        setBusy("btnGenerate", false);
+        setStopVisible(false);
+        activeAbort = null;
+      }
+    }
+
+    // Convert little-endian 16-bit PCM bytes to Float32 (-1..1)
+    function pcmToFloat32(u8) {
+      const n = u8.length >> 1;
+      const f = new Float32Array(n);
+      const v = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+      for (let i = 0; i < n; i++) f[i] = v.getInt16(i * 2, true) / 32768;
+      return f;
+    }
+
+    /*
+     * Streaming with immediate playback: the sidecar streams a WAV whose
+     * header declares a placeholder size (2 e9 bytes, not known while
+     * streaming), so the finished file cannot be played back as a blob.
+     * Instead we parse the 44-byte header for the sample rate and feed the
+     * PCM chunks into Web Audio as they arrive: audio starts ~200 ms after
+     * the first chunk and Stopp cuts it off at any time.
+     */
+    async function streamAudio() {
+      abortActive();
+      if (currentFormat() === "opus") return streamAudioOpus();
+      // Create the AudioContext synchronously (still inside the click gesture)
+      streamCtx = new (window.AudioContext || window.webkitAudioContext)();
+      streamCtx.resume().catch(() => {});
+      streamSources = new Set();
+      streamEndAt = 0;
+
+      setBusy("btnStream", true);
+      setStopVisible(true);
+      setStatus("ttsStatus", "Streaming...");
+      document.getElementById("audioContainer").classList.add("hidden");
+      const start = performance.now();
+
+      let raw = new Uint8Array(0);   // full byte stream (header + PCM)
+      let rawOffset = 0;             // first unparsed byte of the above
+      let headerDone = false;
+      let sampleRate = 24000;
+      let received = 0;
+      let firstChunkMs = 0;
+      let scheduledSec = 0;
+
+      const scheduleFromRaw = (minBytes) => {
+        if (raw.length - rawOffset < minBytes || !streamCtx) return;
+        const u8 = raw.subarray(rawOffset);
+        const f = pcmToFloat32(u8);
+        const buf = streamCtx.createBuffer(1, f.length, sampleRate);
+        buf.copyToChannel(f, 0);
+        const src = streamCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(streamCtx.destination);
+        const t = Math.max(streamCtx.currentTime + 0.03, streamEndAt);
+        src.start(t);
+        streamEndAt = t + buf.duration;
+        src.onended = () => streamSources.delete(src);
+        streamSources.add(src);
+        rawOffset = raw.length;
+        scheduledSec += buf.duration;
+          setStatus("ttsStatus", `Streaming… first chunk after ${firstChunkMs} ms, ${(scheduledSec).toFixed(1)} s audio, ${(received / 1024).toFixed(0)} KB`);
+      };
+
+      activeAbort = new AbortController();
+      try {
+        const res = await postTts("/tts/stream", activeAbort.signal);
+        const reader = res.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const merged = new Uint8Array(raw.length + value.length);
+          merged.set(raw, 0);
+          merged.set(value, raw.length);
+          raw = merged;
+          received += value.length;
+          if (!firstChunkMs) firstChunkMs = Math.round(performance.now() - start);
+
+          if (!headerDone) {
+            if (raw.length < 44) continue;
+            const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+            const riff = String.fromCharCode(raw[0], raw[1], raw[2], raw[3]);
+            const wave = String.fromCharCode(raw[8], raw[9], raw[10], raw[11]);
+            if (riff !== "RIFF" || wave !== "WAVE") throw new Error("Stream does not contain a WAV");
+            const channels = view.getUint16(22, true);
+            const bits = view.getUint16(34, true);
+            sampleRate = view.getUint32(24, true);
+            if (channels !== 1 || bits !== 16) throw new Error(`Unsupported WAV format (${channels} channel${channels === 1 ? "" : "s"}, ${bits} bit)`);
+            rawOffset = 44;
+            headerDone = true;
+          }
+          const minBytes = Math.floor(sampleRate * 0.2 * 2);
+          while (raw.length - rawOffset >= minBytes) scheduleFromRaw(minBytes);
+        }
+        scheduleFromRaw(2); // whatever is left (incl. < 200 ms)
+
+        if (scheduledSec > 0 && streamCtx) {
+          const doneMs = Math.round(performance.now() - start);
+          setStatus("ttsStatus", `Streamed: ${(received / 1024).toFixed(0)} KB in ${doneMs} ms – ${(scheduledSec).toFixed(1)} s of audio playable`, "success");
+          const remaining = Math.max(0, streamEndAt - streamCtx.currentTime);
+          streamStopTimer = setTimeout(() => setStopVisible(false), remaining * 1000 + 200);
+        } else {
+          stopStreamAudio();
+          setStopVisible(false);
+          setStatus("ttsStatus", "No audio received.");
+        }
+      } catch (e) {
+        if (streamSources.size === 0) stopStreamAudio();
+        if (e.name === "AbortError") {
+          setStatus("ttsStatus", `Aborted – ${(received / 1024).toFixed(0)} KB received, ${(scheduledSec).toFixed(1)} s audio`, "");
+        } else {
+          setStatus("ttsStatus", `Error: ${e.message}`, "error");
+        }
+      } finally {
+        setBusy("btnStream", false);
+        activeAbort = null;
+      }
+    }
+
+    // Incremental Opus streaming playback: accumulate Ogg bytes and
+    // periodically call decodeAudioData() on the growing buffer. Ogg/Opus is
+    // a streaming format, partial streams (without EOS) decode fine, giving
+    // us the audio up to the last complete page. We schedule only the new
+    // tail each time (same Web Audio pattern as WAV streaming). Audio starts
+    // ~1 s after the first server burst arrives (Ogg muxer flush cadence).
+    async function streamAudioOpus() {
+      abortActive();
+      streamCtx = new (window.AudioContext || window.webkitAudioContext)();
+      streamCtx.resume().catch(() => {});
+      streamSources = new Set();
+      streamEndAt = 0;
+
+      setBusy("btnStream", true);
+      setStopVisible(true);
+      setStatus("ttsStatus", "Streaming Opus…");
+      document.getElementById("audioContainer").classList.add("hidden");
+      const start = performance.now();
+
+      let raw = new Uint8Array(0);
+      let received = 0;
+      let firstChunkMs = 0;
+      let scheduledSec = 0;
+      let lastDecodedDuration = 0;
+      let decodeFailed = 0;
+
+      const decodeAndPlay = async () => {
+        if (!streamCtx || raw.length < 200) return;
+        try {
+          const ab = raw.slice(0).buffer;
+          const audioBuf = await streamCtx.decodeAudioData(ab);
+          if (!audioBuf || audioBuf.duration <= lastDecodedDuration) return;
+          const newStart = Math.round(lastDecodedDuration * audioBuf.sampleRate);
+          const newSamples = audioBuf.length - newStart;
+          if (newSamples <= 0) return;
+          const ch = audioBuf.getChannelData(0);
+          const buf = streamCtx.createBuffer(1, newSamples, audioBuf.sampleRate);
+          buf.copyToChannel(ch.subarray(newStart), 0);
+          const src = streamCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(streamCtx.destination);
+          const t = Math.max(streamCtx.currentTime + 0.03, streamEndAt);
+          src.start(t);
+          streamEndAt = t + buf.duration;
+          src.onended = () => streamSources.delete(src);
+          streamSources.add(src);
+          lastDecodedDuration = audioBuf.duration;
+          scheduledSec = lastDecodedDuration;
+          decodeFailed = 0;
+          setStatus("ttsStatus", `Streaming Opus… first chunk ${firstChunkMs} ms, ${scheduledSec.toFixed(1)} s audio, ${(received / 1024).toFixed(0)} KB`);
+        } catch (e) {
+          decodeFailed++;
+        }
+      };
+
+      activeAbort = new AbortController();
+      try {
+        const res = await postTts("/tts/stream", activeAbort.signal);
+        const reader = res.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const merged = new Uint8Array(raw.length + value.length);
+          merged.set(raw, 0);
+          merged.set(value, raw.length);
+          raw = merged;
+          received += value.length;
+          if (!firstChunkMs) firstChunkMs = Math.round(performance.now() - start);
+          await decodeAndPlay();
+        }
+        await decodeAndPlay();
+
+        if (decodeFailed > 3 && scheduledSec === 0) {
+          // decodeAudioData never succeeded (browser lacks Opus support):
+          // fall back to blob playback.
+          stopStreamAudio();
+          const blob = new Blob([raw], { type: "audio/opus" });
+          playBlob(blob);
+          setStatus("ttsStatus", `Opus ready in ${(performance.now() - start).toFixed(0)}ms (${(blob.size / 1024).toFixed(0)} KB) – blob playback (no incremental decode)`, "success");
+        } else if (scheduledSec > 0) {
+          const doneMs = Math.round(performance.now() - start);
+          setStatus("ttsStatus", `Opus streamed: ${(received / 1024).toFixed(0)} KB in ${doneMs} ms – ${scheduledSec.toFixed(1)} s audio`, "success");
+          const remaining = Math.max(0, streamEndAt - streamCtx.currentTime);
+          streamStopTimer = setTimeout(() => setStopVisible(false), remaining * 1000 + 200);
+        } else {
+          stopStreamAudio();
+          setStopVisible(false);
+          setStatus("ttsStatus", "No audio received.");
+        }
+      } catch (e) {
+        if (streamSources.size === 0) stopStreamAudio();
+        if (e.name === "AbortError") {
+          setStatus("ttsStatus", `Aborted – ${(received / 1024).toFixed(0)} KB, ${scheduledSec.toFixed(1)} s audio`, "");
+        } else {
+          setStatus("ttsStatus", `Error: ${e.message}`, "error");
+        }
+      } finally {
+        setBusy("btnStream", false);
+        activeAbort = null;
+      }
+    }
+
+    async function cloneVoice() {
+      const name = document.getElementById("voiceName").value.trim();
+      const fileInput = document.getElementById("voiceFile");
+      const file = fileInput.files[0];
+      const btn = document.getElementById("btnClone");
+      if (!name) return setStatus("cloneStatus", "Name required.", "error");
+      if (!file) return setStatus("cloneStatus", "Please choose an audio file.", "error");
+
+      btn.disabled = true;
+      setStatus("cloneStatus", `Cloning voice from "${file.name}"... (may take 30–60s)`);
+      try {
+        const fd = new FormData();
+        fd.append("name", name);
+        if (currentLang) fd.append("lang", currentLang);
+        fd.append("audio", file);
+        const res = await fetch(`${BASE}/voices/clone`, { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        setStatus("cloneStatus", `Voice "${name}" cloned!`, "success");
+        fileInput.value = "";
+        loadVoices();
+      } catch (e) {
+        setStatus("cloneStatus", `Error: ${e.message}`, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function importVoice() {
+      const name = document.getElementById("importName").value.trim();
+      const fileInput = document.getElementById("importFile");
+      const file = fileInput.files[0];
+      const btn = document.getElementById("btnImport");
+      if (!name) return setStatus("importStatus", "Name required.", "error");
+      if (!file) return setStatus("importStatus", "Please choose a .safetensors file.", "error");
+
+      btn.disabled = true;
+      setStatus("importStatus", `Importing "${name}" from ${file.name}...`);
+      try {
+        const fd = new FormData();
+        fd.append("name", name);
+        if (currentLang) fd.append("lang", currentLang);
+        fd.append("file", file);
+        const res = await fetch(`${BASE}/voices/import`, { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        setStatus("importStatus", `Voice "${name}" imported.`, "success");
+        fileInput.value = "";
+        loadVoices();
+      } catch (e) {
+        setStatus("importStatus", `Error: ${e.message}`, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById("effects").addEventListener("change", (e) => {
+      document.getElementById("effectsJson").classList.toggle("hidden", e.target.value !== "custom");
+    });
+    document.getElementById("format").addEventListener("change", refreshFormatLabels);
+    refreshFormatLabels();
+
+    loadState();
+    setInterval(loadState, 15000);
+  </script>
+</body>
+</html>

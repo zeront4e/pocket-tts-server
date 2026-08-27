@@ -1,0 +1,9 @@
+.git
+.venv
+node_modules
+.cache
+.env
+voices
+data
+models
+*.md
