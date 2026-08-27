@@ -1,0 +1,7 @@
+.venv
+node_modules
+.cache
+.env
+voices/*/*.safetensors
+__pycache__
+*.pyc
