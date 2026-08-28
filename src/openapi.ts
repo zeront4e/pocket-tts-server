@@ -478,10 +478,13 @@ export function openapiSpec() {
         },
         EffectPreset: {
           type: "string",
-          enum: ["cathedral", "broadcast", "phone", "robot", "none"],
+          enum: ["cathedral", "broadcast", "phone", "robot", "Female formant", "Male formant", "none"],
           description:
             "Preset name (case-sensitive): cathedral (reverb), broadcast (radio chain), phone " +
-            "(bandpass), robot (bitcrush + EQ), none (no effects).",
+            "(bandpass), robot (formant shift + chopper + bitcrush + lowpass), 'Female formant' " +
+            "(formant shift up, brighter/more female), 'Male formant' (formant shift down, " +
+            "darker/more male). Formant presets change only the timbre: pitch and duration are " +
+            "unchanged. none (no effects).",
           example: "cathedral",
         },
         EffectList: {
@@ -507,6 +510,8 @@ export function openapiSpec() {
             { $ref: "#/components/schemas/CompressorEffect" },
             { $ref: "#/components/schemas/FadeEffect" },
             { $ref: "#/components/schemas/BitcrushEffect" },
+            { $ref: "#/components/schemas/FormantEffect" },
+            { $ref: "#/components/schemas/ChopEffect" },
           ],
         },
         ReverbEffect: {
@@ -598,6 +603,36 @@ export function openapiSpec() {
             bits: { type: "integer", minimum: 4, maximum: 15, default: 12, description: "Bit depth, 4–15." },
           },
           example: { type: "bitcrush", bits: 10 },
+        },
+        FormantEffect: {
+          type: "object",
+          required: ["type"],
+          description:
+            "Formant shift: moves the vocal-tract resonances (timbre) without changing the " +
+            "fundamental pitch or the clip duration. Positive = brighter / smaller-sounding " +
+            "(more female), negative = darker / larger-sounding (more male).",
+          properties: {
+            type: { type: "string", const: "formant" },
+            semitones: {
+              type: "number",
+              minimum: -12,
+              maximum: 12,
+              default: 0,
+              description: "Formant shift in semitones, -12 (one octave lower/darker) to +12 (one octave higher/brighter). Pitch and duration are unchanged.",
+            },
+          },
+          example: { type: "formant", semitones: 5 },
+        },
+        ChopEffect: {
+          type: "object",
+          required: ["type"],
+          description: "Amplitude chopper (classic robot voice): pulses the volume at a fixed rate.",
+          properties: {
+            type: { type: "string", const: "chop" },
+            freq: { type: "number", minimum: 1, maximum: 200, default: 44, description: "Chopper rate in Hz (30–60 sounds most robotic)." },
+            depth: { type: "number", minimum: 0, maximum: 1, default: 0.8, description: "Chop depth, 0 (off) to 1 (fully gated off for half the cycle)." },
+          },
+          example: { type: "chop", freq: 44, depth: 0.85 },
         },
         Health: {
           type: "object",

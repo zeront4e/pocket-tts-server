@@ -4,18 +4,18 @@
 
 # PocketTTS Server
 
-Bun-based HTTP server for **PocketTTS** (Kyutai) — high-quality German **and** English
+Bun-based HTTP server for **PocketTTS** (Kyutai) with high-quality German **and** English
 text-to-speech with runtime language switching, voice cloning, streaming, and self-hosted
 Swagger docs.
 
 - **Models:** German 24-layer (`german_24l`, 24 transformer layers, best quality) and English
   (6-layer) from the ungated mirror
-  [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated) — no HF login needed
+  [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated), no HF login needed
 - **Languages:** `de` (default) and `en` per request (`lang` field). Each language runs in its
-  own sidecar process with its model resident in RAM — switching is instant routing, no reload
+  own sidecar process with its model resident in RAM, so switching is instant routing with no reload
 - **Model source:** Hugging Face download (default) **or fully local files, zero downloads**,
   per language (see [Local model files](#local-model-files-no-hugging-face-download))
-- **Audio:** 24 kHz mono — 16-bit PCM WAV (default) or Ogg/Opus (`format: "opus"`, native 24 kHz
+- **Audio:** 24 kHz mono, 16-bit PCM WAV (default) or Ogg/Opus (`format: "opus"`, native 24 kHz
   encoding, decodes to 48 kHz, configurable bitrate)
 - **Runtime:** CPU-only (int8 quantized), ~200 ms to first audio chunk
 - **Default voices:** `juergen` (German), `alba` (English)
@@ -37,16 +37,16 @@ Bun server (port 3001)         Python sidecar DE (8081)   Python sidecar EN (808
 ```
 
 The Bun server spawns **one `scripts/sidecar_wrapper.py` per language** (via `uv run python`)
-in parallel on startup and waits until **both** models are loaded — both sidecars are
-required, if either fails to start the server exits (fatal). Requests are routed to the
-sidecar of their `lang` (`de`/`en`, default from `DEFAULT_LANGUAGE`) — switching languages is
-pure routing, both models stay resident. The wrapper exists because the stock
-`pocket-tts serve` CLI has no temperature option; it sets
+in parallel on startup and waits until **both** models are loaded, both sidecars are
+required and the server exits if either fails to start (fatal). Requests are routed to the
+sidecar of their `lang` (`de`/`en`, default from `DEFAULT_LANGUAGE`), switching languages is
+pure routing and both models stay resident. The wrapper exists because the stock
+`pocket-tts serve` CLI has no temperature option, so it sets
 `pocket_tts.main.tts_model = TTSModel.load_model(config=…, temp=…, quantize=…)` and serves the
 stock `pocket_tts.main:web_app` with an interruptible `/tts` endpoint. It also runs the
 post-processing/effects pipeline ([below](#post-processing--effects)) on the generated audio.
 Clones are `.safetensors` voice states: German in `voices/de/`, English in `voices/en/`.
-**Clones are architecture-specific — a German clone only works with `lang: "de"`, an English
+**Clones are architecture-specific: a German clone only works with `lang: "de"`, an English
 clone only with `lang: "en"`.** After each model loads, the server issues one throwaway
 warm-up generation per language (the model's first takes are the worst for artifacts).
 
@@ -61,8 +61,8 @@ Requires [bun](https://bun.sh) (Node.js not needed).
 The script:
 1. Installs [uv](https://astral.sh/uv/) if missing
 2. Creates a Python 3.12 venv (`.venv/`)
-3. Installs `pocket-tts` (incl. its PyTorch dependency from PyPI — inference still runs on
-   CPU), `soundfile` (voice-cloning audio decode) and PyAV `av` (the Ogg/Opus encoder behind
+3. Installs `pocket-tts` (incl. its PyTorch dependency from PyPI, inference still runs on
+    CPU), `soundfile` (voice-cloning audio decode) and PyAV `av` (the Ogg/Opus encoder behind
    `format: "opus"`)
 4. Downloads the German model (~672 MB) and the English model (~219 MB), cached by
    huggingface_hub after first run
@@ -97,19 +97,19 @@ raw spec at `/openapi.json`).
 
 ### API
 
-  | Endpoint             | Method | Body                                                        | Response |
-  |----------------------|--------|-------------------------------------------------------------|----------|
-  | `/`                  | GET    | —                                                           | demo page (HTML) |
-  | `/tts`               | POST   | `{"text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus", "bitrate": 32, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | `audio/wav` (or `audio/opus` with `format: "opus"`) |
-  | `/tts/stream`        | POST   | same                                                        | chunked `audio/wav` / `audio/opus` stream |
-  | `/voices`            | GET    | query: `?lang=de|en` (optional)                              | JSON voice list (`{mode, language, voices}`) |
-  | `/voices/clone`      | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional) | JSON |
-  | `/voices/import`     | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional) | JSON (import overwrites an existing name) |
-  | `/voices/download`   | GET    | query: `?name=foo&lang=de|en`                                | `.safetensors` file (custom always; built-ins only in local mode) |
-  | `/voices`            | DELETE | query: `?name=foo&lang=de|en`                                 | JSON (deletes a cloned voice; built-ins are protected) |
-  | `/health`            | GET    | —                                                           | JSON (incl. mode, temperature, per-language `languages` status) |
-  | `/docs`              | GET    | —                                                           | Swagger UI (self-hosted) |
-  | `/openapi.json`      | GET    | —                                                           | OpenAPI 3 spec |
+| Endpoint           | Method | Body                                                                                                                                                                      | Response                                                          |
+|--------------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
+| `/`                | GET    | —                                                                                                                                                                         | demo page (HTML)                                                  |
+| `/tts`             | POST   | `{"text": "...", "lang": "de\|en", "voice": "juergen", "format": "wav\|opus", "bitrate": 32, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | `audio/wav` (or `audio/opus` with `format: "opus"`)               |
+| `/tts/stream`      | POST   | same                                                                                                                                                                      | chunked `audio/wav` / `audio/opus` stream                         |
+| `/voices`          | GET    | query: `?lang=de\|en` (optional)                                                                                                                                          | JSON voice list (`{mode, language, voices}`)                      |
+| `/voices/clone`    | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional)                                                                                                         | JSON                                                              |
+| `/voices/import`   | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional)                                                                                              | JSON (import overwrites an existing name)                         |
+| `/voices/download` | GET    | query: `?name=foo&lang=de\|en`                                                                                                                                            | `.safetensors` file (custom always, built-ins only in local mode) |
+| `/voices`          | DELETE | query: `?name=foo&lang=de\|en`                                                                                                                                            | JSON (deletes a cloned voice, built-ins are protected)            |
+| `/health`          | GET    | —                                                                                                                                                                         | JSON (incl. mode, temperature, per-language `languages` status)   |
+| `/docs`            | GET    | —                                                                                                                                                                         | Swagger UI (self-hosted)                                          |
+| `/openapi.json`    | GET    | —                                                                                                                                                                         | OpenAPI 3 spec                                                    |
 
 **Language:** every request takes an optional `lang` field (`de`/`en`, case-insensitive,
 `german`/`english` aliases work). Omit it for the server default (`DEFAULT_LANGUAGE`,
@@ -182,54 +182,58 @@ leading **click/pop** (a near-full-scale transient in the first ~1 ms), occasion
 tail** after the speech, and occasionally output **below audible level**. By default
 (`postprocess: "auto"`) the sidecar runs a numpy/scipy pipeline over **each generated chunk**
 (PocketTTS yields one per decoded latent, ~80 ms of audio) and writes the processed chunk
-into the response immediately — so `/tts/stream` delivers cleaned audio from the very first
+into the response immediately, so `/tts/stream` delivers cleaned audio from the very first
 chunk onward, adding only a few ms of post-processing per chunk:
 
-- **declick** — removes the leading transient (first chunk only, ~free)
-- **Wiener denoise + online tail gate** — when `postprocess: "full"`, or auto-detected
+- **declick:** removes the leading transient (first chunk only, ~free)
+- **Wiener denoise + online tail gate:** when `postprocess: "full"`, or auto-detected
   inaudible chunks / noise tails (noise estimated from the quietest 300 ms window seen so far)
-- **adaptive leveler** — peak-normalizes each chunk (0.95) and lifts quiet chunks up to ≥ 50 %
+- **adaptive leveler:** peak-normalizes each chunk (0.95) and lifts quiet chunks up to ≥ 50 %
   of the loudest chunk seen so far (loudness stays within ~6 dB)
-- **soft limit** — prevents clipping after level-up/effects
+- **soft limit:** prevents clipping after level-up/effects
 
 `postprocess: "off"` disables everything and returns the raw model output byte-for-byte. The
-server-wide default can be changed with the `POSTPROCESS` env var (`auto`/`full`/`off`); a
+server-wide default can be changed with the `POSTPROCESS` env var (`auto`/`full`/`off`), a
 request-level value overrides it.
 
-**Effects** (`effects` field, applied after cleanup): a preset name — `cathedral` (reverb),
-`broadcast` (radio chain), `phone` (bandpass), `robot` (bitcrush + EQ) — or a JSON array of
-effect objects:
+**Effects** (`effects` field, applied after cleanup): a preset name (case-sensitive) —
+`cathedral` (reverb), `broadcast` (radio chain), `phone` (bandpass), `robot` (formant shift +
+chopper + bitcrush + lowpass), `Female formant` (formant shift up, brighter/more female),
+`Male formant` (formant shift down, darker/more male), or a JSON array of effect objects.
+The formant presets change only the timbre: fundamental pitch and duration are unchanged.
 
-| type          | params                                                        |
-|---------------|---------------------------------------------------------------|
-| `reverb`      | `wet` (0–1, default 0.3), `size` (0–1, default 0.5)           |
-| `echo`        | `delay_ms` (250), `feedback` (0–0.9, 0.4), `mix` (0.3)        |
-| `eq`          | `freq` (Hz), `gain_db`, `q` (1.0), `kind` (peaking/lowshelf/highshelf) |
-| `highpass` / `lowpass` | `freq` (Hz, default 80 / 8000)                      |
-| `compressor`  | `threshold_db` (-18), `ratio` (3), `attack_ms` (1), `release_ms` (100) |
-| `fade`        | `attack_ms` (50), `release_ms` (200)                          |
-| `bitcrush`    | `bits` (4–15, default 12)                                     |
+| type                   | params                                                                                                                                                               |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `reverb`               | `wet` (0–1, default 0.3), `size` (0–1, default 0.5)                                                                                                                  |
+| `echo`                 | `delay_ms` (250), `feedback` (0–0.9, 0.4), `mix` (0.3)                                                                                                               |
+| `eq`                   | `freq` (Hz), `gain_db`, `q` (1.0), `kind` (peaking/lowshelf/highshelf)                                                                                               |
+| `highpass` / `lowpass` | `freq` (Hz, default 80 / 8000)                                                                                                                                       |
+| `compressor`           | `threshold_db` (-18), `ratio` (3), `attack_ms` (1), `release_ms` (100)                                                                                               |
+| `fade`                 | `attack_ms` (50), `release_ms` (200)                                                                                                                                 |
+| `bitcrush`             | `bits` (4–15, default 12)                                                                                                                                            |
+| `formant`              | `semitones` (-12…+12, default 0), formant (timbre) shift: positive = brighter/more female, negative = darker/more male, fundamental pitch and duration are unchanged |
+| `chop`                 | `freq` (Hz, 1–200, default 44), `depth` (0–1, default 0.8), amplitude chopper (robot voice)                                                                          |
 
 Example: `{"type":"echo","delay_ms":300,"feedback":0.3,"mix":0.4}`.
 
 > **Streaming note:** post-processing is applied per generated chunk (~80 ms of audio), so
-> `/tts/stream` with the default `postprocess: "auto"` still streams — processed audio arrives
+> `/tts/stream` with the default `postprocess: "auto"` still streams, processed audio arrives
 > from the very first chunk onward. `postprocess: "off"` streams the raw model output.
 
 ### Output format (WAV / Opus)
 
 By default every endpoint returns 16-bit PCM WAV (24 kHz mono). Pass `format: "opus"`
-to get **Ogg/Opus** instead — typically 3–8× smaller than WAV at equal or better
+to get **Ogg/Opus** instead, typically 3–8× smaller than WAV at equal or better
 perceived quality.
 
 - **Encoding** happens in the Python sidecar (PyAV `libopus`): the 24 kHz model output is fed
   directly to the Opus encoder at its native 24 kHz rate (no resampling) and muxed into an
-  Ogg/Opus container. `POST /tts` and `POST /tts/stream` both support it; the `Content-Type`
+  Ogg/Opus container. `POST /tts` and `POST /tts/stream` both support it. The `Content-Type`
   becomes `audio/opus`. The decoder always outputs 48 kHz (Opus spec), but all signal energy
   stays in the 0–12 kHz speech band.
-- **Bitrate** — the `bitrate` field (kbps, 6–510, default 32). Server-wide defaults come from
-  the `OUTPUT_FORMAT` / `OPUS_BITRATE` env vars; a request-level value wins.
-- **Streaming granularity** — `/tts/stream` with `format: "opus"` streams per ~80 ms chunk, the
+- **Bitrate:** the `bitrate` field (kbps, 6–510, default 32). Server-wide defaults come from
+  the `OUTPUT_FORMAT` / `OPUS_BITRATE` env vars, and a request-level value wins.
+- **Streaming granularity:** `/tts/stream` with `format: "opus"` streams per ~80 ms chunk, the
   same as the WAV path. (FFmpeg's Ogg muxer by default only flushes a page after 1 s of media,
   so the sidecar opens the container with `page_duration=80 ms`.)
   The browser demo decodes Opus incrementally via `decodeAudioData()` on the growing buffer and
@@ -254,14 +258,14 @@ docker compose up -d          # starts it (creates the required tts-data volume)
   ~672 MB, English model ~219 MB, plus tokenizers and voice embeddings) into the `tts-data`
   volume under `/data/hf`, subsequent starts load from the volume. Both sidecars are required,
   so `/health` only reports `healthy` once **both** models are loaded (the healthcheck
-  start-period is set accordingly); if either sidecar fails to start, the process exits and
+  start-period is set accordingly). If either sidecar fails to start, the process exits and
   the container restarts.
 - **Local mode (no downloads):** place the files from
   [Local model files](#local-model-files-no-hugging-face-download) in the volume as
   `/data/models-de/...` and `/data/models-en/...` and set `MODEL_DIR` / `MODEL_DIR_EN` in
   `docker-compose.yml` (either may be omitted to keep that language on Hugging Face).
 - Cloned voices persist in the volume at `/data/voices`.
-- **The volume is required** — it holds the model cache and all cloned voices.
+- **The volume is required:** it holds the model cache and all cloned voices.
   `docker compose down -v` deletes it (and the cached model) as well.
 
 ### Push to a registry (e.g. GHCR)
@@ -336,7 +340,7 @@ model source. Behavior in local mode (per configured language):
   files and passes it to the sidecar. **No Hugging Face requests are ever made** for that
   language (model, voices, everything).
 - Built-in voices are loaded from `$MODEL_DIR*/embeddings/<name>.safetensors` and passed to the
-  sidecar as `voice_path` (absolute path — the sidecar imports each state once and keeps it in
+  sidecar as `voice_path` (absolute path, the sidecar imports each state once and keeps it in
   memory, no per-request upload). A built-in voice whose embedding file you did *not*
   provide is hidden from `GET /voices?lang=…` and yields a clear error if requested.
 - Voice cloning works identically and stays local.
@@ -344,7 +348,7 @@ model source. Behavior in local mode (per configured language):
 
 ### Switching language at runtime
 
-Both languages are always available — both sidecars are required at startup (the server exits
+Both languages are always available, both sidecars are required at startup (the server exits
 if either fails to load). Pass `"lang": "de"` or `"lang": "en"` on any request (see
 [API](#api)). There is nothing to reload: each language's model lives in its own sidecar
 process. The default for requests without `lang` is `DEFAULT_LANGUAGE` (`de`/`en`, env var).
@@ -352,11 +356,11 @@ process. The default for requests without `lang` is `DEFAULT_LANGUAGE` (`de`/`en
 
 ## Voice cloning
 
-Clone a voice from a reference recording (5–30 s of clean speech works best; noisy or
+Clone a voice from a reference recording (5–30 s of clean speech works best, noisy or
 multi-speaker audio degrades the result).
 
 **Browse demo:** open `/`, pick a file with the file-open dialog, name the voice, click
-"Clone Voice" — the browser uploads the file directly (multipart).
+"Clone Voice", the browser uploads the file directly (multipart).
 
 **CLI script:**
 
@@ -367,7 +371,7 @@ bun run scripts/clone-voice.ts /path/to/reference.mp3 my_voice --lang en # Engli
 ```
 
 Saves `voices/de/meine_stimme.safetensors` (German) or `voices/en/my_voice.safetensors` (English).
-**Clones are language-specific** — synthesize with the same `lang` you cloned with:
+**Clones are language-specific:** synthesize with the same `lang` you cloned with:
 
 ```bash
 curl -X POST http://localhost:3001/tts \
@@ -407,22 +411,22 @@ Cloning takes ~30–60 s (the model processes the reference audio), then loading
 
 Environment variables (see `.env`):
 
-| Variable       | Default                    | Purpose                                        |
-|----------------|----------------------------|------------------------------------------------|
-| `PORT`         | `3001`                     | Bun server port                                |
-| `SIDECAR_PORT` | `8081`                     | German sidecar port                            |
-| `SIDECAR_PORT_EN` | `8082`                  | English sidecar port                           |
-| `VOICES_DIR`   | `./voices`                 | where clones are stored (German in `voices/de/`, English in `voices/en/`) |
-| `CONFIG_PATH`  | `./config/german_24l.yaml` | German PocketTTS model config                  |
-| `CONFIG_PATH_EN` | `./config/english.yaml`  | English PocketTTS model config                 |
-| `MODEL_DIR`    | _(unset)_                  | **local mode (German)**: dir with model files, no HF downloads (see [above](#local-model-files-no-hugging-face-download)) |
-| `MODEL_DIR_EN` | _(unset)_                  | **local mode (English)**: same, for the English model |
-| `DEFAULT_LANGUAGE` | `de`                   | language for requests without a `lang` field (`de`/`en`) |
-| `TEMP`         | `0.7`                      | sampling temperature = base diversity/variation (startup only) |
-| `QUANTIZE`     | `1`                        | int8 quantization on/off (startup only)        |
-| `POSTPROCESS`  | `auto`                     | server-wide default for the `postprocess` request param (`auto`/`full`/`off`) |
-| `OUTPUT_FORMAT`| `wav`                      | server-wide default for the `format` request param (`wav`/`opus`) |
-| `OPUS_BITRATE` | `32`                       | default Opus bitrate in kbps (6–510); a request-level `bitrate` wins |
+| Variable           | Default                    | Purpose                                                                                                                   |
+|--------------------|----------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `PORT`             | `3001`                     | Bun server port                                                                                                           |
+| `SIDECAR_PORT`     | `8081`                     | German sidecar port                                                                                                       |
+| `SIDECAR_PORT_EN`  | `8082`                     | English sidecar port                                                                                                      |
+| `VOICES_DIR`       | `./voices`                 | where clones are stored (German in `voices/de/`, English in `voices/en/`)                                                 |
+| `CONFIG_PATH`      | `./config/german_24l.yaml` | German PocketTTS model config                                                                                             |
+| `CONFIG_PATH_EN`   | `./config/english.yaml`    | English PocketTTS model config                                                                                            |
+| `MODEL_DIR`        | _(unset)_                  | **local mode (German)**: dir with model files, no HF downloads (see [above](#local-model-files-no-hugging-face-download)) |
+| `MODEL_DIR_EN`     | _(unset)_                  | **local mode (English)**: same, for the English model                                                                     |
+| `DEFAULT_LANGUAGE` | `de`                       | language for requests without a `lang` field (`de`/`en`)                                                                  |
+| `TEMP`             | `0.7`                      | sampling temperature = base diversity/variation (startup only)                                                            |
+| `QUANTIZE`         | `1`                        | int8 quantization on/off (startup only)                                                                                   |
+| `POSTPROCESS`      | `auto`                     | server-wide default for the `postprocess` request param (`auto`/`full`/`off`)                                             |
+| `OUTPUT_FORMAT`    | `wav`                      | server-wide default for the `format` request param (`wav`/`opus`)                                                         |
+| `OPUS_BITRATE`     | `32`                       | default Opus bitrate in kbps (6–510), a request-level `bitrate` wins                                                      |
 
 ## Project layout
 
@@ -462,21 +466,21 @@ voices/
 
 ## Troubleshooting
 
-- **Slow first start** — both models + voice embeddings download once (~1 GB total: German
+- **Slow first start:** both models + voice embeddings download once (~1 GB total: German
   ~672 MB, English ~219 MB, plus tokenizers and embeddings), then are cached under
-  `~/.cache/huggingface`. (Not relevant in local mode — nothing downloads.)
-- **`address already in use`** — a previous sidecar is still running:
+  `~/.cache/huggingface`. (Not relevant in local mode, nothing downloads.)
+- **`address already in use`:** a previous sidecar is still running:
   `fuser -k 8081/tcp` (German) and `fuser -k 8082/tcp` (English)
-- **Server fails to start** — both sidecars are required: if either fails to load its model,
+- **Server fails to start:** both sidecars are required, so if either fails to load its model,
   or (in local mode) its model files are missing (`MODEL_DIR` / `MODEL_DIR_EN` must contain
   `model.safetensors` and `tokenizer.model`), startup aborts with a fatal error naming the
   language(s) that failed. Check the `[sidecar:de]` / `[sidecar:en]` log lines.
-- **A language returns 503 at runtime** — only happens if that sidecar's process died after a
-  successful startup; see `GET /health` → `languages.<lang>.ready` and the sidecar logs.
-- **Quantization deprecation warnings in logs** — harmless (PyTorch int8 API notice),
-  quantization is intentionally enabled (default `QUANTIZE=1`): ~48 % less RAM, ~27 % faster,
+- **A language returns 503 at runtime:** only happens if that sidecar's process died after a
+  successful startup, see `GET /health` → `languages.<lang>.ready` and the sidecar logs.
+- **Quantization deprecation warnings in logs:** harmless (PyTorch int8 API notice).
+  Quantization is intentionally enabled (default `QUANTIZE=1`), ~48 % less RAM, ~27 % faster,
   ~0 WER change.
-- **Local mode: built-in voice missing** — copy the embedding(s) to
-  `$MODEL_DIR/embeddings/<name>.safetensors`; only the voices you ship are listed/usable.
-- **Cloning fails** — check the reference audio is a valid solo 5–30 s WAV/MP3;
-  `ffmpeg in.wav -ar 24000 -ac 1 cleaned.wav` to normalize first.
+- **Local mode: built-in voice missing:** copy the embedding(s) to
+  `$MODEL_DIR/embeddings/<name>.safetensors`, only the voices you ship are listed/usable.
+- **Cloning fails:** check the reference audio is a valid solo 5–30 s WAV/MP3,
+  use `ffmpeg in.wav -ar 24000 -ac 1 cleaned.wav` to normalize first.

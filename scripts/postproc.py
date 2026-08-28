@@ -426,6 +426,102 @@ def fx_bitcrush(x, bits=12):
     return np.round(x * (steps / 2)) * (2 / steps)
 
 
+# Formant-shifting parameters (STFT spectral-envelope rescaling, see fx_formant).
+_FORM_NPERSEG = 1024   # ~42 ms analysis window
+_FORM_HOP = 256        # 75 % overlap (COLA for Hann)
+_FORM_SIGMA_HZ = 100.0 # envelope smoothing: blurs the harmonic comb, keeps formants
+_FORM_DETAIL_CLIP = 12.0
+
+
+def _gauss_kernel(sigma_bins):
+    """Symmetric Gaussian lowpass kernel (DC-centered), normalized to sum 1."""
+    m = int(3 * sigma_bins)
+    k = np.arange(-m, m + 1)
+    kern = np.exp(-0.5 * (k / sigma_bins) ** 2)
+    return kern / kern.sum()
+
+
+def _formant_shift_frame(X, kern, k, nf, f, detail_clip=_FORM_DETAIL_CLIP):
+    """Formant-shift ONE STFT frame: rescale the spectral envelope by ``f``
+    (moving the formants) while keeping the phase and the comb shape (pitch).
+
+    envelope = Gaussian-smoothed magnitude (the formant structure);
+    detail   = magnitude / envelope (the harmonic comb = the pitch texture).
+    The output keeps the comb at its original frequencies (pitch preserved) but
+    replaces the envelope with itself read from freq/f, so every formant peak at
+    F moves to f*F. Multiplicative (no additive residual) so both up- and
+    down-shifts reposition the formant energy correctly.
+    """
+    mag = np.abs(X)
+    env = np.exp(np.convolve(np.log(mag + 1e-9), kern, mode="same"))
+    env = np.maximum(env, 1e-4 * (env.max() + 1e-9))  # division floor (silence)
+    detail = np.clip(mag / env, 0.0, detail_clip)
+    pos = np.clip(k / f, 0.0, nf - 1)
+    i0 = np.floor(pos).astype(np.int64)
+    i1 = np.minimum(i0 + 1, nf - 1)
+    fr = pos - i0
+    newenv = env[i0] + fr * (env[i1] - env[i0])
+    return (newenv * detail) * np.exp(1j * np.angle(X))
+
+
+def fx_formant(x, semitones=0.0):
+    """Formant shift: moves the vocal-tract resonances (timbre) by ``semitones``
+    WITHOUT changing the fundamental pitch or the clip duration.
+
+    Positive = brighter / smaller-sounding (more female), negative = darker /
+    larger-sounding (more male). Implemented as an overlap-add STFT whose
+    per-frame spectral envelope is rescaled on the frequency axis by
+    ``2**(semitones/12)``; the phase and the harmonic comb (the pitch) are
+    left untouched, so f0 and duration are preserved exactly.
+    """
+    s = float(np.clip(float(semitones), -12.0, 12.0))
+    x = np.ascontiguousarray(x, dtype=np.float64)
+    if len(x) < 2 or s == 0.0:
+        return x.astype(np.float32)
+    f = 2.0 ** (s / 12.0)
+    nperseg = _FORM_NPERSEG
+    hop = _FORM_HOP
+    win = np.hanning(nperseg)
+    pad = nperseg // 2
+    xp = np.concatenate([[0.0] * pad, x, [0.0] * pad])
+    nframes = (len(xp) - nperseg) // hop + 1
+    idx = np.arange(nframes)[:, None] * hop + np.arange(nperseg)[None, :]
+    X = rfft(xp[idx] * win, axis=1)
+    nf = X.shape[1]
+    df = SR / nperseg
+    kern = _gauss_kernel(max(1.0, _FORM_SIGMA_HZ / df))
+    k = np.arange(nf)
+    Y = np.empty_like(X)
+    for i in range(nframes):
+        Y[i] = _formant_shift_frame(X[i], kern, k, nf, f)
+    frames = irfft(Y, n=nperseg, axis=1) * win
+    out = np.zeros(nframes * hop + nperseg)
+    wsum = np.zeros_like(out)
+    for i in range(nframes):
+        a = i * hop
+        out[a:a + nperseg] += frames[i]
+        wsum[a:a + nperseg] += win ** 2
+    out = out / np.where(wsum > 1e-9, wsum, 1e-9)
+    return out[pad:pad + len(x)].astype(np.float32)
+
+
+def fx_chop(x, freq=44.0, depth=0.8):
+    """Amplitude "chopper" (the classic robot voice): volume pulses at ``freq`` Hz.
+
+    The gain oscillates between ``1-depth`` and 1, so ``depth`` 0 is unchanged
+    and 1 fully gates the audio off for half the cycle.
+    """
+    f = float(freq)
+    if not (1.0 <= f <= 200.0):
+        raise ValueError("chop freq must be in [1, 200] Hz")
+    depth = float(np.clip(float(depth), 0.0, 1.0))
+    if len(x) == 0 or depth == 0.0:
+        return x
+    t = np.arange(len(x)) / SR
+    gain = 1.0 - depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * f * t))
+    return (x * gain).astype(np.float32)
+
+
 _EFFECTS = {
     "reverb": fx_reverb,
     "echo": fx_echo,
@@ -435,6 +531,8 @@ _EFFECTS = {
     "compressor": fx_compressor,
     "fade": fx_fade,
     "bitcrush": fx_bitcrush,
+    "formant": fx_formant,
+    "chop": fx_chop,
 }
 
 PRESETS = {
@@ -454,8 +552,20 @@ PRESETS = {
         {"type": "lowpass", "freq": 3400},
     ],
     "robot": [
-        {"type": "bitcrush", "bits": 10},
-        {"type": "eq", "freq": 700, "gain_db": 6, "q": 2.0, "kind": "peaking"},
+        # Formant shift (brighter, robotic) first, then the chopper, then
+        # crunch + top-cut so the gated edges stay gritty, not clicky.
+        {"type": "formant", "semitones": 2},
+        {"type": "chop", "freq": 44, "depth": 0.85},
+        {"type": "bitcrush", "bits": 8},
+        {"type": "lowpass", "freq": 6000},
+    ],
+    # Formant shifts (timbre only, pitch and duration unchanged) that make the
+    # voice appear female (brighter) or male (darker).
+    "Female formant": [
+        {"type": "formant", "semitones": 5},
+    ],
+    "Male formant": [
+        {"type": "formant", "semitones": -5},
     ],
 }
 
@@ -677,6 +787,102 @@ class _Compressor:
         return out.astype(np.float32)
 
 
+class _Formant:
+    """Streaming formant shift (the online twin of fx_formant).
+
+    Runs the same overlap-add STFT envelope-rescaling, but frame by frame as
+    audio arrives. The per-frame shift is identical to the offline pass; only
+    the windowing/accumulation is kept in state so the output is
+    sample-continuous across chunk boundaries:
+
+      * ``pin``   -- the not-yet-analyzed input tail; a frame is formed (hop
+                     apart, contiguous across chunks) whenever it holds a full
+                     window, and the consumed hop is discarded.
+      * ``s``/``w`` -- the overlap-add accumulator and window-sum, kept as a
+                     rolling buffer (``base`` = absolute sample of s[0]). A
+                     sample is emitted once every frame that covers it has been
+                     added (i.e. once frame index floor(p/hop) is processed),
+                     which makes the output continuous and adds a fixed
+                     algorithmic latency of ~ (nperseg-hop) samples.
+
+    Because the envelope is rescaled on the frequency axis, formants move by
+    ``f`` while the phase and the harmonic comb (the pitch) -- and therefore f0
+    and the duration -- are preserved.
+    """
+
+    __slots__ = ("f", "nperseg", "hop", "win", "kern", "k", "nf",
+                 "pin", "s", "w", "base", "emitted", "frame_idx")
+
+    def __init__(self, f):
+        self.f = float(f)
+        self.nperseg = _FORM_NPERSEG
+        self.hop = _FORM_HOP
+        self.win = np.hanning(self.nperseg)
+        self.kern = _gauss_kernel(max(1.0, _FORM_SIGMA_HZ / (SR / self.nperseg)))
+        self.nf = self.nperseg // 2 + 1
+        self.k = np.arange(self.nf)
+        self.pin = np.zeros(0, dtype=np.float64)
+        self.s = np.zeros(0, dtype=np.float64)
+        self.w = np.zeros(0, dtype=np.float64)
+        self.base = 0        # absolute sample index of self.s[0]
+        self.emitted = 0     # number of output samples drained so far
+        self.frame_idx = 0   # global analysis-frame index
+
+    def push(self, x):
+        x = np.asarray(x, dtype=np.float64)
+        if len(x) == 0 or self.f == 1.0:
+            return x.astype(np.float32) if len(x) else x
+        self.pin = np.concatenate([self.pin, x]) if self.pin.size else x
+        # Form as many contiguous (hop-spaced) analysis frames as we have input.
+        while len(self.pin) >= self.nperseg:
+            frame = self.pin[:self.nperseg]
+            Y = _formant_shift_frame(rfft(frame * self.win), self.kern, self.k, self.nf, self.f)
+            yf = np.real(irfft(Y, n=self.nperseg)) * self.win
+            idx0 = self.frame_idx * self.hop - self.base
+            need = idx0 + self.nperseg
+            if len(self.s) < need:
+                pd = need - len(self.s)
+                self.s = np.concatenate([self.s, np.zeros(pd)])
+                self.w = np.concatenate([self.w, np.zeros(pd)])
+            self.s[idx0:idx0 + self.nperseg] += yf
+            self.w[idx0:idx0 + self.nperseg] += self.win ** 2
+            self.pin = self.pin[self.hop:]
+            self.frame_idx += 1
+        # Emit every sample whose covering frames are all in: p with
+        # floor(p/hop) < frame_idx, i.e. p < frame_idx*hop.
+        last_complete = self.frame_idx * self.hop
+        if last_complete > self.emitted and self.w.size >= last_complete - self.base:
+            i0 = self.emitted - self.base
+            i1 = last_complete - self.base
+            out = self.s[i0:i1] / np.where(self.w[i0:i1] > 1e-9, self.w[i0:i1], 1e-9)
+            self.s = self.s[i1:]
+            self.w = self.w[i1:]
+            self.base = last_complete
+            self.emitted = last_complete
+            return out.astype(np.float32)
+        return np.zeros(0, dtype=np.float32)
+
+
+class _Chop:
+    """Streaming amplitude chopper; the phase is the running sample count."""
+
+    __slots__ = ("freq", "depth", "count")
+
+    def __init__(self, freq, depth):
+        self.freq = float(freq)
+        self.depth = float(depth)
+        self.count = 0
+
+    def push(self, x):
+        n = len(x)
+        if n:
+            t = (self.count + np.arange(n)) / SR
+            gain = 1.0 - self.depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * self.freq * t))
+            x = x * gain
+            self.count += n
+        return np.asarray(x, dtype=np.float32)
+
+
 class StreamingEffects:
     """Stateful chain of the (causal) effects, applied chunk by chunk."""
 
@@ -726,6 +932,14 @@ class StreamingEffects:
                 )
             elif t == "bitcrush":
                 self.stages.append(("crush", int(np.clip(kw.get("bits", 12), 4, 15))))
+            elif t == "formant":
+                st_ = float(np.clip(float(kw.get("semitones", 0.0)), -12.0, 12.0))
+                self.stages.append(("formant", _Formant(2.0 ** (st_ / 12.0))))
+            elif t == "chop":
+                f = float(kw.get("freq", 44.0))
+                if not (1.0 <= f <= 200.0):
+                    raise ValueError("chop freq must be in [1, 200] Hz")
+                self.stages.append(("chop", _Chop(f, float(np.clip(float(kw.get("depth", 0.8)), 0.0, 1.0)))))
             elif t == "fade":
                 # Only the attack ramp can be applied online; the release is
                 # skipped (the tail gate has already silenced the ending).
@@ -761,6 +975,10 @@ class StreamingEffects:
             elif kind == "crush":
                 steps = 2 ** st[1]
                 x = np.round(x * (steps / 2)) * (2 / steps)
+            elif kind == "formant":
+                x = st[1].push(x)
+            elif kind == "chop":
+                x = st[1].push(x)
         return x
 
 
