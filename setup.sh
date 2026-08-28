@@ -97,8 +97,7 @@ fi
 
 # 6. Create directories
 step "Creating project directories..."
-mkdir -p voices config scripts static
-touch voices/.gitkeep
+mkdir -p voices config scripts static voices/de voices/en
 
 # 7. Install TypeScript types
 step "Installing TypeScript types..."
