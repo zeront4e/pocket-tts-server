@@ -77,19 +77,23 @@ export interface SynthesizeOptions {
    * Presets: `cathedral`, `broadcast`, `phone`, `robot`.
    */
    effects?: string | Array<Record<string, unknown>>;
-   /**
-    * Output container. `wav` (default) is 16-bit PCM WAV at 24 kHz. `opus` is
-    * Ogg/Opus (encoded in the sidecar at the native 24 kHz rate, decodes to
-    * 48 kHz). The server-wide default can be set via the OUTPUT_FORMAT env
-    * var; an explicit value here always wins.
-    */
-   format?: "wav" | "opus";
-   /**
-    * Opus bitrate in kbps, only used when `format` is `opus` (ignored for
-    * wav). Range 6–510, default 32. The server-wide default can be set via
-    * the OPUS_BITRATE env var; an explicit value here always wins.
-    */
-   bitrate?: number;
+  /**
+   * Output container, all 24 kHz mono (encoded in the sidecar at the native
+   * rate, no resampling). `wav` (default): 16-bit PCM WAV. `opus`: Ogg/Opus
+   * (decodes to 48 kHz). `mp3`: MP3. `aac`: AAC (ADTS stream). `flac`: FLAC
+   * (lossless). `pcm`: raw 16-bit little-endian mono samples. The
+   * server-wide default can be set via the OUTPUT_FORMAT env var; an
+   * explicit value here always wins.
+   */
+  format?: "wav" | "opus" | "mp3" | "aac" | "flac" | "pcm";
+  /**
+   * Bitrate in kbps for the lossy formats (`opus`/`mp3`/`aac`, ignored for
+   * wav/flac/pcm). Range 1–1000 (each codec clamps to its own valid range).
+   * For `opus` the server-wide default (OPUS_BITRATE env var, default 32)
+   * applies when omitted; for `mp3`/`aac` the sidecar default is 128 kbps.
+   * An explicit value here always wins.
+   */
+  bitrate?: number;
    /** Aborts the request (and server-side generation) when the signal fires. */
    signal?: AbortSignal;
 }
@@ -177,6 +181,26 @@ export interface DeleteResult {
   language: Lang;
   deleted: boolean;
   message: string;
+}
+
+/** Options for `openaiSpeech` (the OpenAI-compatible endpoint). */
+export interface OpenAiSpeechOptions {
+  /** Text to synthesize (maps to the OpenAI `input` field). Required. */
+  input: string;
+  /** Any non-empty value works; the server accepts but ignores it. Defaults to `"pocket-tts"`. */
+  model?: string;
+  /** PocketTTS voice name or clone (pass-through, no OpenAI voice aliasing). Defaults to the language default voice. */
+  voice?: string;
+  /** Output format. Defaults to `"mp3"` (the OpenAI default). */
+  response_format?: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
+  /** Language: `de` (German) or `en` (English). Defaults to the server default. */
+  language?: Lang;
+  /** 0.25–4.0. Accepted but ignored (the model has no per-request speed parameter). */
+  speed?: number;
+  /** Accepted but ignored. */
+  instructions?: string;
+  /** Aborts the request when the signal fires. */
+  signal?: AbortSignal;
 }
 
 /** Options for `waitForReady`. */
@@ -272,6 +296,16 @@ export interface TtsClient {
    * @throws TtsApiError (404) when the voice does not exist.
    */
   deleteVoice(name: string, lang?: Lang, signal?: AbortSignal): Promise<DeleteResult>;
+  /**
+   * Generates speech via the OpenAI-compatible endpoint
+   * (`POST /v1/audio/speech`), resolving with the complete audio bytes
+   * (MP3 by default). Lets this client use the exact request shape of the
+   * official OpenAI SDKs.
+   *
+   * @throws TtsApiError on server errors (400, 503, ...) or network failure;
+   * the OpenAI error envelope's `error.message` is in `.message`.
+   */
+  openaiSpeech(options: OpenAiSpeechOptions): Promise<Uint8Array>;
   health(): Promise<Health>;
   waitForReady(options?: WaitReadyOptions): Promise<Health>;
 }
@@ -358,11 +392,37 @@ export function createTtsClient(options: TtsClientOptions = {}): TtsClient {
       *
       * @throws TtsApiError on server errors (400 unknown voice, 503 not ready, ...) or network failure.
       */
-     async synthesize({ text, lang, voice, postprocess, effects, format, bitrate, signal }) {
-       const response = await postJson("/tts", ttsBody({ text, lang, voice, postprocess, effects, format, bitrate }), signal);
-       
-       return new Uint8Array(await response.arrayBuffer());
-     },
+      async synthesize({ text, lang, voice, postprocess, effects, format, bitrate, signal }) {
+        const response = await postJson("/tts", ttsBody({ text, lang, voice, postprocess, effects, format, bitrate }), signal);
+        
+        return new Uint8Array(await response.arrayBuffer());
+      },
+
+      /**
+       * Generates speech via the OpenAI-compatible endpoint (POST
+       * /v1/audio/speech). Same response bytes as `synthesize`, but the
+       * request uses the OpenAI shape (input/response_format/language/
+       * speed/instructions) and MP3 is the default format.
+       *
+       * @throws TtsApiError on server errors (400, 503, ...) or network failure.
+       */
+      async openaiSpeech({ input, model, voice, response_format, language, speed, instructions, signal }) {
+        const body: Record<string, unknown> = { model: model ?? "pocket-tts", input };
+
+        if (voice !== undefined) body.voice = voice;
+
+        if (response_format !== undefined) body.response_format = response_format;
+
+        if (language !== undefined) body.language = language;
+
+        if (speed !== undefined) body.speed = speed;
+
+        if (instructions !== undefined) body.instructions = instructions;
+
+        const response = await postJson("/v1/audio/speech", body, signal);
+        
+        return new Uint8Array(await response.arrayBuffer());
+      },
 
     /**
      * Starts streaming speech generation. Resolves as soon as the server

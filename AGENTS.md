@@ -7,6 +7,11 @@ proxies to ONE PocketTTS Python sidecar PER LANGUAGE: German (port 8081, `german
 Requests carry a `lang` field (`de`/`en`; `german`/`english` aliases; default from the
 `DEFAULT_LANGUAGE` env var, default `de`) and are routed to the matching sidecar —
 switching languages is pure routing with no model reload, both models stay resident.
+There is also an OpenAI-compatible endpoint, `POST /v1/audio/speech` (the OpenAI
+`audio.speech` request shape: `model` required-but-ignored, `input`→`text`, `voice`
+pass-through, `response_format` default `mp3`, `language`→`lang`, `speed` validated-but-ignored,
+`instructions` ignored; bare audio bytes on success, OpenAI `{"error":{message,type,param,code}}`
+envelope on failure), see `src/routes/openai.ts`.
 
 ## Commands
 
@@ -84,9 +89,10 @@ There is no linter configured. Test endpoints with curl against a running server
     emit EOS within 1-2 steps of every later chunk (early-EOS bug: long texts silently
     truncated to their first sentence chunk). A short quiescence poll waits for the model's
     internal threads to drain before the next generation may start.
-   The replaced `/tts` accepts extra form fields: `postprocess` (`auto` default / `full` /
-   `off`), `effects` (preset name or JSON array), `format` (`wav` default / `opus`) and
-   `bitrate` (kbps, 6–510, default 32; opus only). It also accepts `voice_path` (absolute path to
+    The replaced `/tts` accepts extra form fields: `postprocess` (`auto` default / `full` /
+    `off`), `effects` (preset name or JSON array), `format` (`wav` default / `opus` / `mp3` /
+    `aac` / `flac` / `pcm`) and `bitrate` (kbps, 1–1000; applies to the lossy formats opus/mp3/aac,
+    sidecar defaults: opus 32, mp3/aac 128). It also accepts `voice_path` (absolute path to
    a local `.safetensors` voice state): the Bun server sends it for local voices instead of
    uploading the ~74 MB state as `voice_wav`, and the sidecar imports it once per
    `(path, mtime)` and keeps it in an in-memory `_STATE_CACHE` (bounded to 8 entries), this is
@@ -101,19 +107,31 @@ There is no linter configured. Test endpoints with curl against a running server
   throws, the sidecar falls back to the raw audio (never fails the request) and logs
    `postprocessing failed`. A `postprocess`/`effects` validation error returns 400 before
    generation starts.
-    **Output format:** when `format=opus` the sidecar writes each chunk through
-    `opusenc.OpusWriter` instead of the streaming WAV writer, the 24 kHz float PCM is fed
-    DIRECTLY to libopus at its native 24 kHz rate (no resampling); the response `Content-Type`
-    becomes `audio/opus` (the WAV path stays byte-for-byte unchanged). Encoding at 24 kHz keeps
-    all bitrate in the 0–12 kHz speech band (the source has no content above 12 kHz); upsampled
-    48 kHz encoding wastes bits on the empty upper band and causes quantization crackle at low
-    bitrates. The decoder still outputs 48 kHz (Opus always decodes to 48 kHz). A `format`/
-    `bitrate` validation error also returns 400 before generation starts. FFmpeg's Ogg muxer only
-    writes a page once it holds at least `page_duration` of media (muxer default: 1 s; it
-    additionally keeps one page buffered before writing the previous one), so `OpusWriter` opens
-    the container with `options={"page_duration": "80000"}` (µs): without it, `/tts/stream` + opus
-    delivers no audio byte for ~1 s after the headers. With it, opus streams with the same ~80 ms
-    per-chunk granularity as WAV.
+     **Output format:** `wav` (default) keeps the streaming WAV writer byte-for-byte; every
+     other `format` writes each chunk through the matching PyAV writer instead — `opus` →
+     `opusenc.OpusWriter`, `mp3`/`aac`/`flac`/`pcm` → the `Mp3Writer`/`AacWriter`/`FlacWriter`/
+     `PcmWriter` classes in `scripts/audioenc.py` (same `write_pcm_data()`/`finalize()` surface,
+     container bytes forwarded to the same `push(bytes)` callback). The 24 kHz float PCM is fed
+     DIRECTLY to the encoder at its native 24 kHz rate (no resampling). Response `Content-Type`
+     per format: `audio/wav`, `audio/opus`, `audio/mpeg`, `audio/aac`, `audio/flac`, and
+     `application/octet-stream` for `pcm` (raw 16-bit LE mono, no container header). Encoding at
+     24 kHz keeps all bitrate in the 0–12 kHz speech band (the source has no content above
+     12 kHz); upsampled 48 kHz encoding wastes bits on the empty upper band and causes
+     quantization crackle at low bitrates (the Opus decoder still outputs 48 kHz, Opus spec).
+     AAC is muxed as an ADTS stream (not an `.m4a` container): the streaming sink is not
+     seekable and the MP4 muxer needs seek access for its `moov` atom. **FLAC is the one
+     seekable format:** its muxer writes a header up front and seeks back at finalize to patch
+     STREAMINFO `total_samples`; `opusenc`'s no-op-`seek()` sink would leave `total_samples=0`
+     (Duration: N/A), so `FlacWriter` uses a seekable in-memory sink (`audioenc._SeekableSink`)
+     and is delivered whole at `finalize()` (not per-chunk). It also closes the sink explicitly in
+     `finalize()`: PyAV defers closing a file-like output to GC, so an explicit close is what
+     makes the flush deterministic. A `format`/
+     `bitrate` validation error also returns 400 before generation starts. FFmpeg's Ogg muxer only
+     writes a page once it holds at least `page_duration` of media (muxer default: 1 s; it
+     additionally keeps one page buffered before writing the previous one), so `OpusWriter` opens
+     the container with `options={"page_duration": "80000"}` (µs): without it, `/tts/stream` + opus
+     delivers no audio byte for ~1 s after the headers. With it, opus streams with the same ~80 ms
+     per-chunk granularity as WAV.
    **All DSP lives in `scripts/postproc.py` (pure numpy/scipy, no other Python deps).** It fixes
   cold-start artifacts (leading click in the first ~10 ms, inaudible output, noise tails) and
   implements the effects engine. Two twins with the same stages: `process()` (offline, full
@@ -124,16 +142,17 @@ There is no linter configured. Test endpoints with curl against a running server
   with the params needed here, do not "fix" it), declick only touches the first 10 ms and only
   when the 10–50 ms region is quiet (or an isolated >0.5 spike), heavy path = Wiener (noise from
    the quietest 300 ms window) + tail gate, output is peak-normalized to 0.95.
-    **Opus encoding lives in `scripts/opusenc.py`** (PyAV `av`, the only Python dep beyond
-    pocket-tts/scipy/soundfile; installed by `setup.sh` + `Dockerfile`). `OpusWriter` takes
-    24 kHz float32 mono PCM via `write_pcm_data()`, feeds it DIRECTLY to libopus at 24 kHz
-    (480-sample / 20 ms frames, no resampling), and forwards container bytes to a `push(bytes)`
-    callback (the sidecar feeds each write into the streaming response). `finalize()` is
-    idempotent and pads/flushes the tail. Do NOT write raw codec packets to the file object —
-    always go through the `av` container, which muxes the Ogg stream and writes OpusHead/OpusTags.
-    Do NOT add resampling: encoding at the native 24 kHz rate keeps all bits in the speech band
-    (0–12 kHz) and avoids the quantization crackle that upsampled 48 kHz encoding produces at low
-    bitrates.
+     **Audio encoding lives in `scripts/opusenc.py` + `scripts/audioenc.py`** (PyAV `av`, the
+     only Python dep beyond pocket-tts/scipy/soundfile; installed by `setup.sh` + `Dockerfile`).
+     `OpusWriter` takes
+     24 kHz float32 mono PCM via `write_pcm_data()`, feeds it DIRECTLY to libopus at 24 kHz
+     (480-sample / 20 ms frames, no resampling), and forwards container bytes to a `push(bytes)`
+     callback (the sidecar feeds each write into the streaming response). `finalize()` is
+     idempotent and pads/flushes the tail. Do NOT write raw codec packets to the file object —
+     always go through the `av` container, which muxes the Ogg stream and writes OpusHead/OpusTags.
+     Do NOT add resampling: encoding at the native 24 kHz rate keeps all bits in the speech band
+     (0–12 kHz) and avoids the quantization crackle that upsampled 48 kHz encoding produces at low
+     bitrates.
     After `waitForReady()` in `startSidecar(lang)`, `warmupModel(lang)` runs one throwaway `/tts`
   generation (that language's default voice, `postprocess=auto`) so the first real request hits a
   warm model (first takes are the worst for artifacts). Best-effort: failures only log a warning.
@@ -173,21 +192,25 @@ There is no linter configured. Test endpoints with curl against a running server
   (en, 8082), `DEFAULT_LANGUAGE` (`de`/`en`, default `de`), `VOICES_DIR`, `CONFIG_PATH`,
   `CONFIG_PATH_EN` (default `./config/english.yaml`), `MODEL_DIR`, `MODEL_DIR_EN`, `TEMP`
   (sampling temperature / base diversity, startup only), `QUANTIZE` (int8, default on),
-  `POSTPROCESS` (server-wide default for the `postprocess` param: `auto`/`full`/`off`, default
-  `auto`; request-level value wins), `OUTPUT_FORMAT` (server-wide default for the `format` param:
-  `wav`/`opus`, default `wav`) and `OPUS_BITRATE` (default Opus bitrate kbps, 6–510, default 32;
-  request-level `bitrate` wins). NOTE: the PocketTTS model has **no per-request speed
-  parameter**, do not invent one.
- - Request params `lang` + `postprocess` + `effects` + `format` + `bitrate` are accepted by
-   `/tts` and `/tts/stream` (Bun validates lang/postprocess/format/bitrate; the sidecar
-   validates effects and all of them). `lang` is `de`/`en` (aliases `german`/`english`,
-   case-insensitive; missing/empty → `DEFAULT_LANGUAGE`; unknown → 400). The voice endpoints
-   accept `lang` as a query param (`GET /voices`, `GET /voices/download`) or a form field
-   (`clone`, `import`, `delete`); missing → `DEFAULT_LANGUAGE`. `effects` is a preset name (`cathedral`, `broadcast`, `phone`, `robot`, `none`) or a JSON
-  array of `{type, ...}` objects; on the wire it is always a string (arrays are
-  `JSON.stringify`ed into the multipart form field). `format` is `wav` (default) or `opus`;
-  `bitrate` (kbps, 6–510) applies to opus. Effect types/params are documented in the
-  OpenAPI spec and README.
+   `POSTPROCESS` (server-wide default for the `postprocess` param: `auto`/`full`/`off`, default
+   `auto`; request-level value wins), `OUTPUT_FORMAT` (server-wide default for the `format` param:
+   `wav`/`opus`/`mp3`/`aac`/`flac`/`pcm`, default `wav`) and `OPUS_BITRATE` (default Opus bitrate kbps, 6–510, default 32;
+   request-level `bitrate` wins). NOTE: the PocketTTS model has **no per-request speed
+   parameter**, do not invent one. (The OpenAI endpoint accepts a `speed` field for
+   compatibility: it is validated — finite number 0.25–4.0 — and then ignored.)
+  - Request params `lang` + `postprocess` + `effects` + `format` + `bitrate` are accepted by
+    `/tts`, `/tts/stream` (Bun validates lang/postprocess/format/bitrate; the sidecar
+    validates effects and all of them) and by `/v1/audio/speech` (OpenAI shape, see above;
+    `postprocess`/`effects` are not exposed there — server defaults apply). `lang` is `de`/`en`
+    (aliases `german`/`english`,
+    case-insensitive; missing/empty → `DEFAULT_LANGUAGE`; unknown → 400). The voice endpoints
+    accept `lang` as a query param (`GET /voices`, `GET /voices/download`) or a form field
+    (`clone`, `import`, `delete`); missing → `DEFAULT_LANGUAGE`. `effects` is a preset name (`cathedral`, `broadcast`, `phone`, `robot`, `none`) or a JSON
+   array of `{type, ...}` objects; on the wire it is always a string (arrays are
+   `JSON.stringify`ed into the multipart form field). `format` is `wav` (default) / `opus` /
+   `mp3` / `aac` / `flac` / `pcm`; `bitrate` (kbps, 1–1000) applies to the lossy formats
+   (opus/mp3/aac; for opus the `OPUS_BITRATE` env default is sent when the request omits it).
+   Effect types/params are documented in the OpenAPI spec and README.
 
 ## Gotchas
 
@@ -197,8 +220,9 @@ There is no linter configured. Test endpoints with curl against a running server
 - `Bun.GlobDirectory` does not exist in Bun 1.3, use Node `fs.readdirSync`.
 - Voice cloning from non-WAV audio (MP3 etc.) requires `soundfile` in `.venv`
   (optional PocketTTS dep); `setup.sh` installs it. WAV works without it.
-- `format=opus` requires PyAV (`av`) in `.venv`, it provides the `libopus` encoder;
-  `setup.sh` and the `Dockerfile` install it. WAV output works without it.
+- `format` values other than `wav` (opus/mp3/aac/flac/pcm) require PyAV (`av`) in `.venv`,
+  it provides the libopus/lame/aac/flac encoders; `setup.sh` and the `Dockerfile` install it.
+  WAV output works without it.
 - `bun-types` 1.3 lacks `BunFile.textSync` / `Bun.writeSync`, use the async `text()` /
   `Bun.write()` (that's why `getEffectiveConfigPath()` is async).
 - Do NOT use `os.tmpdir()`, Bun honours the `TEMP` env var (our temperature!) in it, which

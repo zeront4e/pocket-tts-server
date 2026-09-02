@@ -22,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # tini: proper PID 1, forwards signals and reaps orphaned sidecar processes
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini unzip \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # --- toolchains, installed world-readable into /usr/local/bin
@@ -50,6 +50,9 @@ WORKDIR /app
 
 # --- Python sidecar environment: uv-managed CPython, CPU-only torch
 #     (torch from the CPU index, no CUDA wheels, ~2 GB smaller)
+ARG PYTHON_VERSION
+ARG TORCH_VERSION
+ARG POCKET_TTS_VERSION
 RUN uv python install ${PYTHON_VERSION} \
     && uv venv .venv --python ${PYTHON_VERSION} \
     && uv pip install --python .venv/bin/python "torch==${TORCH_VERSION}" \

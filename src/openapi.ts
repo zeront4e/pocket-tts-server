@@ -7,30 +7,34 @@ export function openapiSpec() {
     openapi: "3.0.3",
     info: {
       title: "PocketTTS Server API",
-      version: "2.0.0",
+      version: "2.1.0",
       description:
         "Bun server proxying PocketTTS (Kyutai) Python sidecars, one per language, each holding " +
         "its model in memory: German 24-layer (`de`) and English (`en`). Set the `lang` field " +
         "('de' | 'en') on any request to choose the language; omitting it uses the server default " +
         "(DEFAULT_LANGUAGE env var, default 'de'). Switching is instant, both models stay loaded " +
         "and warmed up, the server just routes to the matching sidecar. " +
-        "24 kHz mono output (WAV by default, or Ogg/Opus via the per-request `format` field), " +
-        "voice cloning, streaming. " +
+        "24 kHz mono output: WAV (default), Ogg/Opus, MP3, AAC, FLAC, or raw PCM via the " +
+        "per-request `format` field (all encoded in the sidecar at the native 24 kHz rate), " +
+        "voice cloning, streaming, plus an OpenAI-compatible endpoint (POST /v1/audio/speech, " +
+        "works with the official OpenAI SDKs). " +
         "Output is post-processed by default (postprocess=auto): each generated chunk is " +
         "cleaned up on the fly by a numpy/scipy pipeline in the sidecar (leading cold-start " +
         "click removed, noise tails denoised/gated, loudness kept consistent) and streamed " +
         "as soon as it is generated (postprocess=off returns the raw model output). " +
-         "Opus output is encoded in the sidecar with libopus (native 24 kHz) at a per-request " +
-        "bitrate (default 32 kbps). Optional intentional effects (reverb, echo, EQ, ...) are " +
-         "supported per request. Model files come from Hugging Face by default, or fully locally " +
-         "via the MODEL_DIR / MODEL_DIR_EN env vars (one per language, see the project README for " +
-         "details). Both sidecars are required: the server only starts once every language's " +
-         "model is loaded. Note: the model has no " +
+         "Lossy output (opus/mp3/aac) is encoded in the sidecar at a per-request " +
+        "bitrate (opus default 32 kbps, mp3/aac default 128 kbps). Optional intentional " +
+          "effects (reverb, echo, EQ, ...) are supported per request on the native " +
+          "endpoints. Model files come from Hugging Face by default, or fully locally " +
+          "via the MODEL_DIR / MODEL_DIR_EN env vars (one per language, see the project README for " +
+          "details). Both sidecars are required: the server only starts once every language's " +
+          "model is loaded. Note: the model has no " +
         "per-request speed parameter. The sampling temperature is set at startup via the TEMP env var.",
     },
     servers: [{ url: "/" }],
     tags: [
       { name: "tts", description: "Speech generation" },
+      { name: "openai", description: "OpenAI-compatible API" },
       { name: "voices", description: "Voice list and cloning" },
       { name: "meta", description: "Health and documentation" },
     ],
@@ -50,11 +54,15 @@ export function openapiSpec() {
             },
           },
           responses: {
-            200: {
-              description: "Generated audio (WAV or Ogg/Opus per the format field)",
+              200: {
+              description: "Generated audio (WAV by default, or opus/mp3/aac/flac/pcm per the format field)",
               content: {
                 "audio/wav": { schema: { type: "string", format: "binary" } },
                 "audio/opus": { schema: { type: "string", format: "binary" } },
+                "audio/mpeg": { schema: { type: "string", format: "binary" } },
+                "audio/aac": { schema: { type: "string", format: "binary" } },
+                "audio/flac": { schema: { type: "string", format: "binary" } },
+                "application/octet-stream": { schema: { type: "string", format: "binary" } },
               },
             },
             400: { $ref: "#/components/responses/BadRequest" },
@@ -90,19 +98,73 @@ export function openapiSpec() {
             },
           },
           responses: {
-            200: {
-              description: "Streaming audio (chunked WAV or Ogg/Opus per the format field)",
+              200: {
+              description: "Streaming audio (chunked WAV by default, or opus/mp3/aac/flac/pcm per the format field)",
               headers: {
                 "X-Streaming": { schema: { type: "string", example: "true" } },
               },
               content: {
                 "audio/wav": { schema: { type: "string", format: "binary" } },
                 "audio/opus": { schema: { type: "string", format: "binary" } },
+                "audio/mpeg": { schema: { type: "string", format: "binary" } },
+                "audio/aac": { schema: { type: "string", format: "binary" } },
+                "audio/flac": { schema: { type: "string", format: "binary" } },
+                "application/octet-stream": { schema: { type: "string", format: "binary" } },
               },
             },
             400: { $ref: "#/components/responses/BadRequest" },
             502: { $ref: "#/components/responses/SidecarError" },
             503: { $ref: "#/components/responses/NotReady" },
+          },
+        },
+      },
+      "/v1/audio/speech": {
+        post: {
+          tags: ["openai"],
+          summary: "OpenAI-compatible text-to-speech",
+          description:
+            "Drop-in for OpenAI's POST /v1/audio/speech: point the official OpenAI SDKs at " +
+            "<server>/v1 (any API key) and use audio.speech.create(). `model` is accepted but " +
+            "ignored, `input` maps to the text, `voice` is passed through as a PocketTTS voice " +
+            "name (built-in or clone, see GET /voices; no OpenAI voice-name aliasing), " +
+            "`language` selects de/en (the { type: \"language\", value } object form is accepted, " +
+            "a plain `lang` field works too), `speed` is validated (0.25-4.0) and ignored, " +
+            "`instructions` is ignored. `response_format` defaults to mp3 (the OpenAI default). " +
+            "Success returns raw audio bytes with the format's Content-Type and no " +
+            "Content-Disposition; errors use the OpenAI error envelope (OpenAiError). " +
+            "postprocess/effects are not part of the OpenAI request shape, the server-wide " +
+            "defaults apply.",
+          operationId: "openaiSpeech",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/OpenAiSpeechRequest" } },
+            },
+          },
+          responses: {
+            200: {
+              description: "Generated audio (mp3 by default, or the chosen response_format)",
+              content: {
+                "audio/mpeg": { schema: { type: "string", format: "binary" } },
+                "audio/opus": { schema: { type: "string", format: "binary" } },
+                "audio/aac": { schema: { type: "string", format: "binary" } },
+                "audio/flac": { schema: { type: "string", format: "binary" } },
+                "audio/wav": { schema: { type: "string", format: "binary" } },
+                "application/octet-stream": { schema: { type: "string", format: "binary" } },
+              },
+            },
+            400: {
+              description: "Invalid request (OpenAI error envelope)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/OpenAiError" } } },
+            },
+            502: {
+              description: "Sidecar error (OpenAI error envelope)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/OpenAiError" } } },
+            },
+            503: {
+              description: "Language sidecar not ready (OpenAI error envelope)",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/OpenAiError" } } },
+            },
           },
         },
       },
@@ -357,23 +419,116 @@ export function openapiSpec() {
             effects: { $ref: "#/components/schemas/Effects" },
             format: {
               type: "string",
-              enum: ["wav", "opus"],
+              enum: ["wav", "opus", "mp3", "aac", "flac", "pcm"],
               default: "wav",
               description:
-                "Output container. 'wav' (default) is 16-bit PCM WAV at 24 kHz. 'opus' is Ogg/Opus " +
-                "encoded in the sidecar with libopus at the native 24 kHz rate (decodes to 48 kHz, " +
-                "the Opus standard). The server-wide default can be changed with the OUTPUT_FORMAT " +
-                "env var; this field always wins.",
+                "Output container, all 24 kHz mono encoded in the sidecar at the native rate (no " +
+                "resampling). 'wav' (default): 16-bit PCM WAV. 'opus': Ogg/Opus (decodes to 48 " +
+                "kHz, the Opus standard). 'mp3': MP3 (libmp3lame). 'aac': AAC as an ADTS stream " +
+                "(not an m4a file, streaming needs no seekable container). 'flac': FLAC " +
+                "(lossless). 'pcm': raw 16-bit little-endian mono samples (no container, " +
+                "application/octet-stream). The server-wide default can be changed with the " +
+                "OUTPUT_FORMAT env var; this field always wins.",
             },
             bitrate: {
               type: "integer",
-              minimum: 6,
-              maximum: 510,
-              default: 32,
+              minimum: 1,
+              maximum: 1000,
               description:
-                "Opus bitrate in kbps, only used when format=opus (ignored for wav). Range 6..510, " +
-                "default 32 (clamped to the codec's valid range). The server-wide default can be " +
-                "changed with the OPUS_BITRATE env var; this field always wins.",
+                "Bitrate in kbps for the lossy formats (opus/mp3/aac, ignored for wav/flac/pcm). " +
+                "Range 1..1000 (each codec clamps to its own valid range). For opus the " +
+                "server-wide default (OPUS_BITRATE env var, default 32) is always applied when " +
+                "this field is omitted; for mp3/aac the sidecar default is 128 kbps. A " +
+                "request-level value always wins.",
+            },
+          },
+        },
+        OpenAiSpeechRequest: {
+          type: "object",
+          required: ["model", "input"],
+          properties: {
+            model: {
+              type: "string",
+              description:
+                "Required but ignored: any non-empty value works (the PocketTTS sidecars are the " +
+                "model). Pass e.g. 'gpt-4o-mini-tts' or 'pocket-tts'.",
+              example: "pocket-tts",
+            },
+            input: {
+              type: "string",
+              description:
+                "The text to be spoken, write it in the selected language (German model speaks " +
+                "German, English model speaks English). Required, non-empty.",
+              example: "Hallo, wie geht es dir?",
+            },
+            voice: {
+              type: "string",
+              description:
+                "A PocketTTS voice name: built-in (juergen, alba, estelle, giovanni, lola, rafael " +
+                "— see GET /voices) or a clone in the language's VOICES_DIR. Omit for the " +
+                "language's default voice. There is no aliasing of OpenAI voice names (alloy, " +
+                "shimmer, ...); unknown names yield a 400.",
+              example: "juergen",
+            },
+            response_format: {
+              type: "string",
+              enum: ["mp3", "opus", "aac", "flac", "wav", "pcm"],
+              default: "mp3",
+              description:
+                "Audio format: 'mp3' (default, the OpenAI default), 'opus' (Ogg/Opus), 'aac' " +
+                "(ADTS stream), 'flac', 'wav', or 'pcm' (raw 16-bit LE mono). The 'audio/<name>' " +
+                "variants are accepted too.",
+            },
+            language: {
+              description:
+                "Language: 'de' or 'en' (aliases 'german'/'english' work). Accepts a plain " +
+                "string or the OpenAI object form { type: \"language\", value: \"de\" }. Omit for " +
+                "the server default (DEFAULT_LANGUAGE env var). A plain `lang` field is accepted " +
+                "as a fallback (non-OpenAI extension).",
+              oneOf: [
+                { type: "string", enum: ["de", "en"] },
+                {
+                  type: "object",
+                  properties: {
+                    type: { type: "string", const: "language" },
+                    value: { type: "string", enum: ["de", "en"] },
+                  },
+                  required: ["value"],
+                },
+              ],
+              example: "de",
+            },
+            speed: {
+              type: "number",
+              minimum: 0.25,
+              maximum: 4,
+              description:
+                "Accepted and validated (0.25-4.0) but IGNORED: the PocketTTS model has no " +
+                "per-request speed parameter.",
+            },
+            instructions: {
+              type: "string",
+              description: "Accepted but ignored.",
+            },
+          },
+        },
+        OpenAiError: {
+          type: "object",
+          required: ["error"],
+          properties: {
+            error: {
+              type: "object",
+              required: ["message", "type", "param", "code"],
+              properties: {
+                message: { type: "string", description: "Human-readable error message." },
+                type: {
+                  type: "string",
+                  enum: ["invalid_request_error", "server_error"],
+                  description: "'invalid_request_error' for 4xx, 'server_error' for 5xx.",
+                },
+                param: { type: ["string", "null"], description: "The offending request field, when known." },
+                code: { type: ["string", "null"], description: "Machine-readable code (null for most errors)." },
+              },
             },
           },
         },

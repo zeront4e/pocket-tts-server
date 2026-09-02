@@ -27,10 +27,14 @@ online tail gate, adaptive level, stateful `effects`, soft limit) and written
 Output format: The `format` form field selects the container (default "wav").
 "opus" wraps the same per-chunk pipeline in an in-process Ogg/Opus encoder
 (the 24 kHz PCM is fed DIRECTLY to libopus at its native rate, no
-resampling, the decoder still outputs 48 kHz; see opusenc.py). `bitrate`
-(kbps, 6..510, default 32) sets the Opus bitrate. The Bun server resolves the defaults from
-the OUTPUT_FORMAT / OPUS_BITRATE env vars and always sends both form fields,
-so this wrapper only falls back to wav/32k when they are absent.
+resampling, the decoder still outputs 48 kHz; see opusenc.py). "mp3"
+(libmp3lame), "aac" (ADTS), "flac" (lossless) and "pcm" (raw 16-bit LE) are the
+same per-chunk pipeline wrapped in PyAV-backed encoders (see audioenc.py), all
+at the native 24 kHz rate. `bitrate` (kbps) sets the lossy bitrate (opus
+default 32, mp3/aac default 128); flac/pcm/wav ignore it. The Bun server
+resolves the defaults from the OUTPUT_FORMAT / OPUS_BITRATE env vars and sends
+`bitrate` for opus by default, so this wrapper only falls back to its
+per-format defaults when the field is absent.
 
 Environment:
   CONFIG_PATH   path to the model config YAML (set by the Bun server)
@@ -55,6 +59,7 @@ from fastapi.responses import StreamingResponse
 
 import pocket_tts.main
 import opusenc
+import audioenc
 import postproc
 from pocket_tts.data.audio import StreamingWAVWriter
 from pocket_tts.default_parameters import get_default_voice_for_language
@@ -268,6 +273,74 @@ def _put_or_drop(out_queue: queue.Queue, data: bytes, stop_event: threading.Even
                 return
 
 
+# Response container -> Content-Type. wav/flac/pcm are not lossy (no bitrate).
+FORMAT_MEDIA_TYPE = {
+    "wav": "audio/wav",
+    "opus": "audio/opus",
+    "mp3": "audio/mpeg",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "pcm": "application/octet-stream",
+}
+# Per-format default lossy bitrate in kbps when the `bitrate` field is absent
+# (the Bun server sends OPUS_BITRATE for opus by default; these are fallbacks).
+FORMAT_DEFAULT_BITRATE = {
+    "opus": 32,
+    "mp3": 128,
+    "aac": 128,
+}
+
+
+class _FileLike:
+    """File-like sink the stock StreamingWAVWriter writes into; every write()
+    is forwarded to `push` (the response queue). It deliberately has no
+    seek()/tell(): the WAV writer must treat the stream as unseekable and emit
+    a placeholder header, which is what lets /tts stream the WAV without
+    buffering (the Bun server patches the header for /tts and leaves the
+    placeholder in place for /tts/stream).
+    """
+
+    def __init__(self, push):
+        self._push = push
+
+    def write(self, data):
+        # The _checked generator is what actually stops the loop; once
+        # stopped we simply drop data (e.g. a stray write triggered by the
+        # wave writer's close during GC after a cancellation).
+        self._push(data)
+
+    def flush(self):
+        pass
+
+
+def _make_writer(push, sr: int, fmt: str, bitrate_kbps: Optional[int]):
+    """Build the response-container writer for `fmt`, sharing `push`.
+
+    Every returned writer exposes the StreamingWAVWriter/OpusWriter surface
+    (write_pcm_data + an idempotent finalize), so the generation loop below is
+    shared across all formats. wav is the stock placeholder-header streaming
+    WAV; opus wraps the Ogg encoder (opusenc.py); mp3/aac/flac/pcm are the
+    PyAV-backed encoders (audioenc.py). When `bitrate_kbps` is None (the
+    `bitrate` form field absent) the lossy formats fall back to their
+    per-format defaults (FORMAT_DEFAULT_BITRATE).
+    """
+    if fmt in FORMAT_DEFAULT_BITRATE:
+        kbps = (bitrate_kbps or FORMAT_DEFAULT_BITRATE[fmt]) * 1000
+        if fmt == "opus":
+            return opusenc.OpusWriter(push, sample_rate=sr, bitrate=kbps)
+        if fmt == "mp3":
+            return audioenc.Mp3Writer(push, sample_rate=sr, bitrate=kbps)
+        return audioenc.AacWriter(push, sample_rate=sr, bitrate=kbps)
+    if fmt == "flac":
+        return audioenc.FlacWriter(push, sample_rate=sr)
+    if fmt == "pcm":
+        return audioenc.PcmWriter(push, sample_rate=sr)
+    wav = _FileLike(push)
+    writer = StreamingWAVWriter(wav, sr)
+    writer.write_header(sr)
+    return writer
+
+
 def _generate(
     text: str,
     model_state: dict,
@@ -275,7 +348,7 @@ def _generate(
     stop_event: threading.Event,
     spp: Optional[postproc.StreamingPostProcessor],
     fmt: str = "wav",
-    bitrate_kbps: int = 32,
+    bitrate_kbps: Optional[int] = None,
 ):
     """Worker thread: run generation, push audio bytes into out_queue.
 
@@ -301,25 +374,15 @@ def _generate(
         time. If processing a chunk fails, the request never fails: that chunk
         (and the rest) is sent raw.
 
-    Output container:
+    Output container (see _make_writer):
       * wav (default): the stock placeholder-header streaming WAV.
-      * opus: the same per-chunk pipeline wrapped in an in-process Ogg/Opus
-        encoder (24 kHz PCM fed directly to libopus, no resampling, see
-        opusenc.py). Encoding a chunk never fails the request: on error we
-        stop and flush what we have.
+      * opus/mp3/aac/flac/pcm: the same per-chunk pipeline wrapped in an
+        in-process PyAV encoder (24 kHz PCM fed directly at its native rate,
+        no resampling; see opusenc.py / audioenc.py). Encoding a chunk never
+        fails the request: on error we stop and flush what we have.
     """
     model = pocket_tts.main.tts_model
     sr = model.config.mimi.sample_rate
-
-    class _FileLike:
-        def write(self, data):
-            # The _checked generator is what actually stops the loop; once
-            # stopped we simply drop data (e.g. a stray write triggered by
-            # the wave writer's close during GC after a cancellation).
-            _put_or_drop(out_queue, data, stop_event)
-
-        def flush(self):
-            pass
 
     def _checked(gen):
         try:
@@ -339,22 +402,12 @@ def _generate(
 
     # Same logic as pocket_tts.data.audio.stream_audio_chunks, inlined so the
     # wave writer can be closed deterministically on cancellation (otherwise
-    # its GC-time __del__ spews "seek not supported" tracebacks). For opus the
-    # writer is opusenc.OpusWriter, which exposes the same write_pcm_data /
-    # finalize surface (finalize() is idempotent, so the finally block below
-    # can call it on both paths).
-    if fmt == "opus":
-        writer = opusenc.OpusWriter(
-            push=lambda data: _put_or_drop(out_queue, data, stop_event),
-            sample_rate=sr,
-            bitrate=bitrate_kbps * 1000,
-        )
-        is_opus = True
-    else:
-        wav = _FileLike()
-        writer = StreamingWAVWriter(wav, sr)
-        writer.write_header(sr)
-        is_opus = False
+    # its GC-time __del__ spews "seek not supported" tracebacks). Every format
+    # uses a writer with the same write_pcm_data / finalize surface (finalize()
+    # is idempotent, so the finally block below can call it on any non-WAV
+    # writer); see _make_writer.
+    push = lambda data: _put_or_drop(out_queue, data, stop_event)
+    writer = _make_writer(push, sr, fmt, bitrate_kbps)
 
     n_chunks = 0
     t_gen = time.time()
@@ -405,9 +458,7 @@ def _generate(
                 pass
             finally:
                 try:
-                    if is_opus:
-                        writer.finalize()
-                    else:
+                    if isinstance(writer, StreamingWAVWriter):
                         # finalize() already closed it on the normal path; on
                         # cancellation/skip close it here. Patch _patchheader to
                         # a no-op first in ALL cases: the streaming _FileLike
@@ -416,6 +467,10 @@ def _generate(
                         # crash while patching the placeholder header.
                         writer.wave_writer._patchheader = lambda: None
                         writer.wave_writer.close()
+                    else:
+                        # opus/mp3/aac/flac/pcm: idempotent, pads + flushes the
+                        # tail and writes the final container bytes.
+                        writer.finalize()
                 except Exception:
                     pass
 
@@ -564,17 +619,20 @@ def _install_interruptible_tts():
             raise HTTPException(status_code=400, detail=effect_err)
 
         fmt = (format or "wav").strip().lower()
-        if fmt not in ("wav", "opus"):
-            raise HTTPException(status_code=400, detail="format must be 'wav' or 'opus'")
+        if fmt not in FORMAT_MEDIA_TYPE:
+            raise HTTPException(
+                status_code=400,
+                detail="format must be one of: " + ", ".join(FORMAT_MEDIA_TYPE),
+            )
 
-        bitrate_kbps = 32
+        bitrate_kbps = FORMAT_DEFAULT_BITRATE.get(fmt)
         if bitrate is not None and str(bitrate).strip() != "":
             try:
                 bitrate_kbps = int(float(str(bitrate)))
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="bitrate must be an integer (kbps)")
-            if not (6 <= bitrate_kbps <= 510):
-                raise HTTPException(status_code=400, detail="bitrate must be between 6 and 510 (kbps)")
+            if not (1 <= bitrate_kbps <= 1000):
+                raise HTTPException(status_code=400, detail="bitrate must be between 1 and 1000 (kbps)")
 
         spp: Optional[postproc.StreamingPostProcessor] = None
         if pp_mode != "off" or effect_list:
@@ -624,8 +682,9 @@ def _install_interruptible_tts():
                 # else ever reads it.
                 stop_event.set()
 
-        media_type = "audio/opus" if fmt == "opus" else "audio/wav"
-        ext = "opus" if fmt == "opus" else "wav"
+        media_type = FORMAT_MEDIA_TYPE[fmt]
+        # The file extension matches the format name for every container.
+        ext = fmt
 
         return StreamingResponse(
             body(),

@@ -5,8 +5,8 @@
 # PocketTTS Server
 
 Bun-based HTTP server for **PocketTTS** (Kyutai) with high-quality German **and** English
-text-to-speech with runtime language switching, voice cloning, streaming, and self-hosted
-Swagger docs.
+text-to-speech with runtime language switching, voice cloning, streaming, an OpenAI-compatible
+API, and self-hosted Swagger docs.
 
 - **Models:** German 24-layer (`german_24l`, 24 transformer layers, best quality) and English
   (6-layer) from the ungated mirror
@@ -15,8 +15,10 @@ Swagger docs.
   own sidecar process with its model resident in RAM, so switching is instant routing with no reload
 - **Model source:** Hugging Face download (default) **or fully local files, zero downloads**,
   per language (see [Local model files](#local-model-files-no-hugging-face-download))
-- **Audio:** 24 kHz mono, 16-bit PCM WAV (default) or Ogg/Opus (`format: "opus"`, native 24 kHz
-  encoding, decodes to 48 kHz, configurable bitrate)
+- **Audio:** 24 kHz mono; output as WAV (default), Ogg/Opus, MP3, AAC, FLAC, or raw PCM
+  (`format` field, configurable bitrate for the lossy formats)
+- **OpenAI-compatible API:** `POST /v1/audio/speech` speaks the OpenAI `audio.speech` request
+  shape (drop-in for the official SDKs, `baseURL` → `…/v1`)
 - **Runtime:** CPU-only (int8 quantized), ~200 ms to first audio chunk
 - **Default voices:** `juergen` (German), `alba` (English)
 
@@ -27,7 +29,8 @@ Bun server (port 3001)         Python sidecar DE (8081)   Python sidecar EN (808
 ┌────────────────────────┐    ┌────────────────────┐     ┌────────────────────┐
 │ POST /tts              │    │ sidecar_wrapper.py │     │ sidecar_wrapper.py │
 │ POST /tts/stream       │    │ (German 24l model) │     │ (English model)    │
-│ POST /voices/clone     │    └────────────────────┘     └────────────────────┘
+│ POST /v1/audio/speech  │    └────────────────────┘     └────────────────────┘
+│ POST /voices/clone     │
 │ GET  /voices           │         (each: /tts streaming, /health)
 │ GET  /   (demo page)   │
 │ GET  /docs (Swagger)   │    + pocket-tts export-voice
@@ -100,8 +103,9 @@ raw spec at `/openapi.json`).
 | Endpoint           | Method | Body                                                                                                                                                                      | Response                                                          |
 |--------------------|--------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
 | `/`                | GET    | —                                                                                                                                                                         | demo page (HTML)                                                  |
-| `/tts`             | POST   | `{"text": "...", "lang": "de\|en", "voice": "juergen", "format": "wav\|opus", "bitrate": 32, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | `audio/wav` (or `audio/opus` with `format: "opus"`)               |
-| `/tts/stream`      | POST   | same                                                                                                                                                                      | chunked `audio/wav` / `audio/opus` stream                         |
+| `/tts`             | POST   | `{"text": "...", "lang": "de\|en", "voice": "juergen", "format": "wav\|opus\|mp3\|aac\|flac\|pcm", "bitrate": 128, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | audio bytes: `audio/wav` (default), `audio/opus`, `audio/mpeg`, `audio/aac`, `audio/flac`, or raw PCM (`application/octet-stream`) |
+| `/tts/stream`      | POST   | same                                                                                                                                                                      | chunked audio stream (same formats as `/tts`)                     |
+| `/v1/audio/speech` | POST   | OpenAI shape: `{"model": "…", "input": "…", "voice": "…", "response_format": "mp3\|opus\|aac\|flac\|wav\|pcm", "language": "de\|en", "speed": 1.0, "instructions": "…"}` (`model` + `input` required) | audio bytes (same formats; no `Content-Disposition`) or OpenAI error envelope `{"error": {message, type, param, code}}` |
 | `/voices`          | GET    | query: `?lang=de\|en` (optional)                                                                                                                                          | JSON voice list (`{mode, language, voices}`)                      |
 | `/voices/clone`    | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional)                                                                                                         | JSON                                                              |
 | `/voices/import`   | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional)                                                                                              | JSON (import overwrites an existing name)                         |
@@ -173,7 +177,51 @@ curl -X POST http://localhost:3001/tts \
   -H 'Content-Type: application/json' \
   -d '{"text": "Hallöchen!", "effects": [{"type":"reverb","wet":0.4},{"type":"eq","freq":3000,"gain_db":2,"kind":"peaking"}]}' \
   -o out.wav
+
+# Any other output container (mp3/aac/flac/pcm):
+curl -X POST http://localhost:3001/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hallo!", "format": "mp3", "bitrate": 128}' -o out.mp3
+# → raw 16-bit PCM (no container header):  ffplay -f s16le -ar 24000 -ac 1 out.pcm
+curl -X POST http://localhost:3001/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hallo!", "format": "pcm"}' -o out.pcm
 ```
+
+### OpenAI-compatible API
+
+`POST /v1/audio/speech` accepts the OpenAI `audio.speech` request shape, so the official
+OpenAI SDKs work unchanged (point `baseURL` at `…/v1`; any API key is accepted):
+
+```bash
+curl -X POST http://localhost:3001/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "pocket-tts", "input": "Hello, how are you doing?",
+       "voice": "alba", "response_format": "mp3", "language": "en"}' \
+  -o out.mp3
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:3001/v1", api_key="anything")
+with open("out.mp3", "wb") as f:
+    f.write(client.audio.speech.create(
+        model="pocket-tts",
+        input="Hallo, wie geht es dir?",
+        voice="juergen",
+        response_format="mp3",   # mp3 (default) / opus / aac / flac / wav / pcm
+        language="de",
+    ).content)
+```
+
+Field mapping: `model` (required, any value) is ignored, `input` → `text`, `voice` is a
+PocketTTS voice name (built-in or clone, no OpenAI voice aliasing), `response_format`
+defaults to `mp3` (the `audio/<name>` variants are accepted), `language` → `lang`
+(`de`/`en`, the `{type: "language", value}` object form works), `speed` is validated
+(0.25–4.0) but ignored, `instructions` is ignored. `postprocess`/`effects` are not exposed
+(server defaults apply). Success returns the raw audio bytes (no `Content-Disposition`);
+errors use the OpenAI envelope `{"error": {"message", "type", "param", "code"}}`.
 
 ### Post-processing & effects
 
@@ -220,24 +268,33 @@ Example: `{"type":"echo","delay_ms":300,"feedback":0.3,"mix":0.4}`.
 > `/tts/stream` with the default `postprocess: "auto"` still streams, processed audio arrives
 > from the very first chunk onward. `postprocess: "off"` streams the raw model output.
 
-### Output format (WAV / Opus)
+### Output format
 
-By default every endpoint returns 16-bit PCM WAV (24 kHz mono). Pass `format: "opus"`
-to get **Ogg/Opus** instead, typically 3–8× smaller than WAV at equal or better
-perceived quality.
+The `format` field selects the container; all formats are 24 kHz mono.
 
-- **Encoding** happens in the Python sidecar (PyAV `libopus`): the 24 kHz model output is fed
-  directly to the Opus encoder at its native 24 kHz rate (no resampling) and muxed into an
-  Ogg/Opus container. `POST /tts` and `POST /tts/stream` both support it. The `Content-Type`
-  becomes `audio/opus`. The decoder always outputs 48 kHz (Opus spec), but all signal energy
-  stays in the 0–12 kHz speech band.
-- **Bitrate:** the `bitrate` field (kbps, 6–510, default 32). Server-wide defaults come from
-  the `OUTPUT_FORMAT` / `OPUS_BITRATE` env vars, and a request-level value wins.
-- **Streaming granularity:** `/tts/stream` with `format: "opus"` streams per ~80 ms chunk, the
-  same as the WAV path. (FFmpeg's Ogg muxer by default only flushes a page after 1 s of media,
-  so the sidecar opens the container with `page_duration=80 ms`.)
-  The browser demo decodes Opus incrementally via `decodeAudioData()` on the growing buffer and
-  plays audio as it arrives (same Web Audio scheduling as WAV streaming).
+| `format` | Content-Type              | Notes                                                                                          |
+|----------|---------------------------|------------------------------------------------------------------------------------------------|
+| `wav`    | `audio/wav`               | 16-bit PCM WAV, the default. `/tts` patches the header; `/tts/stream` streams it (placeholder data size, see above) |
+| `opus`   | `audio/opus`              | Ogg/Opus, native 24 kHz encoding (decodes to 48 kHz), bitrate 6–510 kbps (default 32)         |
+| `mp3`    | `audio/mpeg`              | MP3 (libmp3lame), default 128 kbps                                                             |
+| `aac`    | `audio/aac`               | AAC in an ADTS stream (not an `.m4a` container), default 128 kbps                              |
+| `flac`   | `audio/flac`              | lossless FLAC. Delivered whole (its header is patched at the end, so it buffers before flushing) — the other formats stream per ~80 ms chunk |
+| `pcm`    | `application/octet-stream`| raw 16-bit little-endian samples, no container header (`ffplay -f s16le -ar 24000 -ac 1 …`)    |
+
+- **Encoding** happens in the Python sidecar (PyAV): the 24 kHz model output is fed directly to
+  the encoder at its native rate (no resampling). `POST /tts`, `POST /tts/stream`, and
+  `POST /v1/audio/speech` all support every format. The file extension (for `Content-Disposition`
+  on the native endpoints) always matches the format name.
+- **Bitrate:** the `bitrate` field (kbps, 1–1000) applies to the lossy formats
+  (`opus`/`mp3`/`aac`). For `opus` the `OPUS_BITRATE` env default is honored when the request
+  omits it (and the range is 6–510); for `mp3`/`aac` the sidecar default is 128 kbps. It is
+  ignored for `wav`/`flac`/`pcm`. A request-level value always wins.
+- **Streaming granularity:** `/tts/stream` streams per ~80 ms chunk for `wav`/`opus`/`mp3`/`aac`/
+  `pcm`. `flac` is the exception: its muxer must seek back to patch the STREAMINFO header, so it is
+  buffered in the sidecar and delivered whole at the end (still lossless, just not per-chunk). For
+  Opus, FFmpeg's Ogg muxer by default only flushes a page after 1 s of media, so the sidecar opens
+  the container with `page_duration=80 ms`. The browser demo decodes Opus incrementally via
+  `decodeAudioData()` on the growing buffer and plays audio as it arrives.
 - `postprocess` / `effects` apply identically before encoding (cleanup runs on the PCM, then the
   result is encoded).
 
@@ -425,7 +482,7 @@ Environment variables (see `.env`):
 | `TEMP`             | `0.7`                      | sampling temperature = base diversity/variation (startup only)                                                            |
 | `QUANTIZE`         | `1`                        | int8 quantization on/off (startup only)                                                                                   |
 | `POSTPROCESS`      | `auto`                     | server-wide default for the `postprocess` request param (`auto`/`full`/`off`)                                             |
-| `OUTPUT_FORMAT`    | `wav`                      | server-wide default for the `format` request param (`wav`/`opus`)                                                         |
+| `OUTPUT_FORMAT`    | `wav`                      | server-wide default for the `format` request param (`wav`/`opus`/`mp3`/`aac`/`flac`/`pcm`)                                |
 | `OPUS_BITRATE`     | `32`                       | default Opus bitrate in kbps (6–510), a request-level `bitrate` wins                                                      |
 
 ## Project layout
@@ -442,16 +499,18 @@ src/
   utils.ts          locates the uv binary
   client.ts         self-contained typed HTTP client for the server (Bun + browser)
   openapi.ts        OpenAPI 3 spec (hand-maintained — update with routes!)
-  routes/
-    tts.ts          /tts, /tts/stream + lang/voice resolution
-    voices.ts       /voices, /voices/clone, /voices/import, /voices/download, DELETE /voices
-    docs.ts         /docs, /openapi.json, /swagger/* static assets
-    health.ts       /health (per-language status)
+   routes/
+     tts.ts          /tts, /tts/stream + lang/voice resolution (shared synthesizeTts pipeline)
+     openai.ts       /v1/audio/speech (OpenAI-compatible request shape + error envelope)
+     voices.ts       /voices, /voices/clone, /voices/import, /voices/download, DELETE /voices
+     docs.ts         /docs, /openapi.json, /swagger/* static assets
+     health.ts       /health (per-language status)
 scripts/
   clone-voice.ts    CLI voice cloning (--lang de|en)
   sidecar_wrapper.py  Python entry: loads model with TEMP/QUANTIZE, serves pocket_tts web_app
   postproc.py       post-processing pipeline + effects engine (numpy/scipy, runs in the sidecar)
   opusenc.py        Ogg/Opus encoder for format=opus (PyAV; native 24 kHz, no resampling)
+  audioenc.py       MP3/AAC/FLAC/PCM encoders (PyAV; native 24 kHz, no resampling)
 static/
   index.html        browser demo at GET /
   icon.jpg          demo icon / favicon (served at GET /icon.jpg)

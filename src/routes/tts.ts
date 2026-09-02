@@ -15,11 +15,25 @@ import {
   getPostprocessDefault,
   getOutputFormat,
   getOpusBitrate,
+  OUTPUT_FORMATS,
+  type OutputFormat,
 } from "../config.js";
 
 export type EffectsParam = string | Array<Record<string, unknown>>;
 
-export type OutputFormat = "wav" | "opus";
+export type { OutputFormat };
+
+// Response Content-Type per output container (pcm has no audio/* type: it is
+// raw 16-bit little-endian mono samples). The file extension always matches
+// the format name.
+export const FORMAT_CONTENT_TYPE: Record<OutputFormat, string> = {
+  wav: "audio/wav",
+  opus: "audio/opus",
+  mp3: "audio/mpeg",
+  aac: "audio/aac",
+  flac: "audio/flac",
+  pcm: "application/octet-stream",
+};
 
 export interface TtsRequest {
   text?: string;
@@ -118,17 +132,19 @@ function buildForm(body: TtsRequest, lang: Lang): { formData: FormData; format: 
     }
   }
 
-  const format = (body.format ?? getOutputFormat()).trim().toLowerCase() as OutputFormat;
+  const format = (body.format ?? getOutputFormat()).trim().toLowerCase();
 
-  if (format !== "wav" && format !== "opus") {
-    throw new Error("Field 'format' must be 'wav' or 'opus'");
+  if (!(OUTPUT_FORMATS as readonly string[]).includes(format)) {
+    throw new Error(`Field 'format' must be one of: ${OUTPUT_FORMATS.join(", ")}`);
   }
 
   formData.append("format", format);
 
-  // Bitrate is only used for opus, but always resolved + sent so the env default
-  // (OPUS_BITRATE) is honored. Request-level value wins; clamped to [6, 510] kbps.
-  let bitrate = getOpusBitrate();
+  // Bitrate applies to the lossy formats (opus/mp3/aac). For opus the env
+  // default (OPUS_BITRATE) is honored by always sending a value; for the other
+  // formats it is only sent when the request provides one, so the sidecar falls
+  // back to its per-format defaults (128 kbps for mp3/aac). Range 1..1000 kbps.
+  let bitrate: number | undefined;
 
   if (body.bitrate !== undefined) {
     const b = Number(body.bitrate);
@@ -140,13 +156,19 @@ function buildForm(body: TtsRequest, lang: Lang): { formData: FormData; format: 
     bitrate = Math.round(b);
   }
 
-  if (bitrate < 6 || bitrate > 510) {
-    throw new Error("Field 'bitrate' must be between 6 and 510 (kbps)");
+  if (format === "opus" && bitrate === undefined) {
+    bitrate = getOpusBitrate();
   }
 
-  formData.append("bitrate", String(bitrate));
+  if (bitrate !== undefined && (bitrate < 1 || bitrate > 1000)) {
+    throw new Error("Field 'bitrate' must be between 1 and 1000 (kbps)");
+  }
 
-  return { formData, format };
+  if (bitrate !== undefined) {
+    formData.append("bitrate", String(bitrate));
+  }
+
+  return { formData, format: format as OutputFormat };
 }
 
 // 503 when the language cannot serve right now (not configured, or its
@@ -165,7 +187,14 @@ function langNotReadyError(lang: Lang): Response | null {
 
 export async function ttsGenerate(request: Request): Promise<Response> {
   const body = await request.json().catch(() => null) as TtsRequest | null;
+  return synthesizeTts(body, { clientSignal: clientAbortSignal(request) });
+}
 
+// Shared synthesis pipeline for an already-parsed JSON body: lang + voice
+// resolution, sidecar fetch, WAV header patch, attachment response. Used by
+// /tts and by the OpenAI-compatible /v1/audio/speech endpoint (which builds a
+// TtsRequest from the OpenAI request shape and passes attachment: false).
+export async function synthesizeTts(body: TtsRequest | null, opts: { attachment?: boolean; clientSignal?: AbortSignal } = {}): Promise<Response> {
   if (!body?.text?.trim()) {
     return jsonError(400, "Field 'text' is required");
   }
@@ -188,7 +217,7 @@ export async function ttsGenerate(request: Request): Promise<Response> {
     const res = await fetch(sidecarUrl(lang, "/tts"), {
       method: "POST",
       body: formData,
-      signal: clientAbortSignal(request),
+      signal: opts.clientSignal,
     });
 
     const sidecarErr = await sidecarError(res);
@@ -201,15 +230,18 @@ export async function ttsGenerate(request: Request): Promise<Response> {
       buffer = patchWavHeader(buffer);
     }
 
-    const ext = format === "opus" ? "opus" : "wav";
+    const headers: Record<string, string> = {
+      "Content-Type": FORMAT_CONTENT_TYPE[format],
+      "Content-Length": String(buffer.length),
+    };
 
-    return new Response(buffer, {
-      headers: {
-        "Content-Type": format === "opus" ? "audio/opus" : "audio/wav",
-        "Content-Length": String(buffer.length),
-        "Content-Disposition": `attachment; filename="speech.${ext}"`,
-      },
-    });
+    // The OpenAI-compatible endpoint returns bare audio bytes (no
+    // Content-Disposition), the native /tts endpoint a download attachment.
+    if (opts.attachment !== false) {
+      headers["Content-Disposition"] = `attachment; filename="speech.${format}"`;
+    }
+
+    return new Response(buffer, { headers });
   } catch (error) {
     return jsonError(400, error instanceof Error ? error.message : "Invalid request");
   }
@@ -289,7 +321,7 @@ export async function ttsStream(request: Request): Promise<Response> {
 
     return new Response(stream, {
       headers: {
-        "Content-Type": format === "opus" ? "audio/opus" : "audio/wav",
+        "Content-Type": FORMAT_CONTENT_TYPE[format],
         "X-Streaming": "true",
       },
     });

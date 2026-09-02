@@ -117,11 +117,18 @@ export function getPostprocessDefault(): string {
   return v === "full" || v === "off" ? v : "auto";
 }
 
-// Server-wide default output container (OUTPUT_FORMAT env var): "wav" (default)
-// or "opus". A request-level `format` field always wins.
-export function getOutputFormat(): "wav" | "opus" {
+// Output containers. All are 24 kHz mono, encoded in the sidecar at the model's
+// native rate (no resampling). `pcm` is raw 16-bit little-endian mono samples
+// (no container, Content-Type application/octet-stream).
+export const OUTPUT_FORMATS = ["wav", "opus", "mp3", "aac", "flac", "pcm"] as const;
+
+export type OutputFormat = (typeof OUTPUT_FORMATS)[number];
+
+// Server-wide default output container (OUTPUT_FORMAT env var, "wav" default).
+// A request-level `format` field always wins.
+export function getOutputFormat(): OutputFormat {
   const v = (Bun.env.OUTPUT_FORMAT ?? "wav").trim().toLowerCase();
-  return v === "opus" ? "opus" : "wav";
+  return (OUTPUT_FORMATS as readonly string[]).includes(v) ? (v as OutputFormat) : "wav";
 }
 
 // Default Opus bitrate in kbps (OPUS_BITRATE env var), clamped to libopus's

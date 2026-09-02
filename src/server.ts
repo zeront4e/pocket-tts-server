@@ -1,6 +1,7 @@
 import { join } from "path";
 import { healthHandler } from "./routes/health.js";
 import { ttsGenerate, ttsStream } from "./routes/tts.js";
+import { openaiSpeech } from "./routes/openai.js";
 import { voicesList, voicesClone, voicesDownload, voicesDelete, voicesImport } from "./routes/voices.js";
 import { docsHtml, openapiJson, swaggerAsset } from "./routes/docs.js";
 
@@ -47,6 +48,10 @@ export async function createServer() {
 
         if (method === "POST" && url.pathname === "/tts/stream") {
           return ttsStream(req);
+        }
+
+        if (method === "POST" && url.pathname === "/v1/audio/speech") {
+          return openaiSpeech(req);
         }
 
         if (method === "GET" && url.pathname === "/voices") {
@@ -106,8 +111,9 @@ function notFound() {
         "GET  /docs          - Swagger docs (self-hosted, offline-capable)",
         "GET  /openapi.json  - OpenAPI 3 spec",
         "GET  /health        - Health check (incl. per-language sidecar status)",
-        'POST /tts           - { "text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus" } → WAV or Ogg/Opus',
-        'POST /tts/stream    - { "text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus" } → streaming WAV or Ogg/Opus',
+        'POST /tts             - { "text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus|mp3|aac|flac|pcm", "bitrate": 128 } → audio bytes',
+        'POST /tts/stream      - same as /tts, streamed in chunks as they are generated',
+        'POST /v1/audio/speech - OpenAI-compatible TTS: { "model": "...", "input": "...", "voice": "...", "response_format": "mp3", "language": "de|en" } → audio bytes (OpenAI error envelope on errors)',
         "GET  /voices?lang=de|en - List available voices for a language",
         "POST /voices/clone  - multipart (name + audio file: WAV/MP3 reference recording, lang optional) → cloned voice",
         "POST /voices/import  - multipart (name + file: existing .safetensors voice, lang optional) → imported voice",
