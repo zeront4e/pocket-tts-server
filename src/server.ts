@@ -4,11 +4,13 @@ import { ttsGenerate, ttsStream } from "./routes/tts.js";
 import { openaiSpeech } from "./routes/openai.js";
 import { voicesList, voicesClone, voicesDownload, voicesDelete, voicesImport } from "./routes/voices.js";
 import { docsHtml, openapiJson, swaggerAsset } from "./routes/docs.js";
-
-const PORT = Number(Bun.env.PORT ?? 3001);
+import { mcpAudioResponse, mcpHandler } from "./routes/mcp.js";
 
 export async function createServer() {
   const demoHtml = await Bun.file(join(import.meta.dir, "../static/index.html")).text();
+
+  // Read at call time (not import time) so tests can pick an ephemeral port.
+  const PORT = Number(Bun.env.PORT ?? 3001);
 
   return Bun.serve({
     port: PORT,
@@ -52,6 +54,23 @@ export async function createServer() {
 
         if (method === "POST" && url.pathname === "/v1/audio/speech") {
           return openaiSpeech(req);
+        }
+
+        // MCP server (Streamable HTTP, stateless). POST handles the JSON-RPC
+        // exchange; GET/DELETE are not offered (no SSE, no sessions) -> 405.
+        if (url.pathname === "/mcp") {
+          if (method === "POST") {
+            return mcpHandler(req);
+          }
+
+          return Response.json(
+            { error: "Method not allowed: MCP endpoint accepts POST only (stateless Streamable HTTP)" },
+            { status: 405, headers: { Allow: "POST" } },
+          );
+        }
+
+        if (method === "GET" && url.pathname.startsWith("/mcp/audio/")) {
+          return mcpAudioResponse(req);
         }
 
         if (method === "GET" && url.pathname === "/voices") {
@@ -114,6 +133,8 @@ function notFound() {
         'POST /tts             - { "text": "...", "lang": "de|en", "voice": "juergen", "format": "wav|opus|mp3|aac|flac|pcm", "bitrate": 128 } → audio bytes',
         'POST /tts/stream      - same as /tts, streamed in chunks as they are generated',
         'POST /v1/audio/speech - OpenAI-compatible TTS: { "model": "...", "input": "...", "voice": "...", "response_format": "mp3", "language": "de|en" } → audio bytes (OpenAI error envelope on errors)',
+        'POST /mcp             - MCP server (Streamable HTTP, JSON-RPC 2.0): tools generate_speech + list_voices for AI agents / MCP gateways',
+        'GET  /mcp/audio/<id>  - Raw bytes of a generated take (from a generate_speech resource_link, ~10 min TTL)',
         "GET  /voices?lang=de|en - List available voices for a language",
         "POST /voices/clone  - multipart (name + audio file: WAV/MP3 reference recording, lang optional) → cloned voice",
         "POST /voices/import  - multipart (name + file: existing .safetensors voice, lang optional) → imported voice",

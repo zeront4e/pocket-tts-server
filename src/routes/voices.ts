@@ -1,4 +1,5 @@
 import { runUv } from "../utils.js";
+import { TtsError } from "./tts.js";
 import {
   type Lang,
   BUILTIN_VOICES,
@@ -12,6 +13,7 @@ import {
   builtinVoiceLocalPath,
   customVoiceDir,
   customVoicePath,
+  defaultVoiceFor,
 } from "../config.js";
 
 // Optional `lang` from a query string or form field: absent → server default,
@@ -28,26 +30,36 @@ function parseLang(value: string | null): { lang?: Lang; error?: Response } {
   return { lang };
 }
 
-export async function voicesList(req: Request): Promise<Response> {
-  const url = new URL(req.url);
+export interface VoiceEntry {
+  name: string;
+  type: "builtin" | "custom";
+  language: string;
+  path?: string;
+}
 
-  const parsed = parseLang(url.searchParams.get("lang"));
+export interface VoiceListing {
+  mode: "local" | "huggingface";
+  language: Lang;
+  defaultVoice: string;
+  voices: VoiceEntry[];
+}
 
-  if (parsed.error) return parsed.error;
-  const lang = parsed.lang!;
-
+// Shared voice listing for a language: built-ins (in local mode only the ones
+// whose embedding exists in the language's model dir) plus the custom voices
+// from the language's voice dir. Throws TtsError(503) when the language is
+// unavailable. Used by GET /voices and by the MCP list_voices tool.
+export async function listVoicesForLang(lang: Lang): Promise<VoiceListing> {
   if (!isLanguageAvailable(lang)) {
-    return jsonError(503, languageUnavailableError(lang));
+    throw new TtsError(503, languageUnavailableError(lang));
   }
 
-  const builtins = BUILTIN_VOICES.map((v) => ({ ...v, type: "builtin" }));
-  // In local mode a built-in voice is only usable if its embedding exists in the
-  // language's model dir.
+  const builtins = BUILTIN_VOICES.map((v) => ({ ...v, type: "builtin" as const }));
+
   const visibleBuiltins = isLocalMode(lang)
     ? builtins.filter((v) => Bun.file(builtinVoiceLocalPath(v.name, lang)).size > 0)
     : builtins;
 
-  const customVoices: { name: string; type: string; language: string; path: string }[] = [];
+  const customVoices: VoiceEntry[] = [];
   const dir = customVoiceDir(lang);
 
   try {
@@ -60,11 +72,37 @@ export async function voicesList(req: Request): Promise<Response> {
     }
   } catch {}
 
-  return Response.json({
-    mode: isLocalMode() ? "local" : "huggingface",
+  return {
+    mode: isLocalMode(lang) ? "local" : "huggingface",
     language: lang,
+    defaultVoice: defaultVoiceFor(lang),
     voices: [...visibleBuiltins, ...customVoices],
-  });
+  };
+}
+
+export async function voicesList(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+
+  const parsed = parseLang(url.searchParams.get("lang"));
+
+  if (parsed.error) return parsed.error;
+  const lang = parsed.lang!;
+
+  try {
+    const listing = await listVoicesForLang(lang);
+
+    return Response.json({
+      mode: listing.mode,
+      language: lang,
+      voices: listing.voices,
+    });
+  } catch (error) {
+    if (error instanceof TtsError) {
+      return jsonError(error.status, error.message);
+    }
+
+    throw error;
+  }
 }
 
 export async function voicesClone(req: Request): Promise<Response> {

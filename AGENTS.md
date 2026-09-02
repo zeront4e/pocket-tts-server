@@ -11,14 +11,19 @@ There is also an OpenAI-compatible endpoint, `POST /v1/audio/speech` (the OpenAI
 `audio.speech` request shape: `model` required-but-ignored, `input`→`text`, `voice`
 pass-through, `response_format` default `mp3`, `language`→`lang`, `speed` validated-but-ignored,
 `instructions` ignored; bare audio bytes on success, OpenAI `{"error":{message,type,param,code}}`
-envelope on failure), see `src/routes/openai.ts`.
+envelope on failure), see `src/routes/openai.ts`. And an MCP server, `POST /mcp` (MCP
+Streamable HTTP / JSON-RPC 2.0, for AI agents and MCP gateways) exposing the tools
+`generate_speech` (opus by default; returns a `resource_link` to `GET /mcp/audio/<id>`,
+which serves the same audio as raw bytes for ~10 min — no base64 by default;
+`inline_audio:true` also embeds a base64 MCP `audio` block) and `list_voices`, see
+`src/routes/mcp.ts`.
 
 ## Commands
 
 ```bash
 bun run src/index.ts            # start server (spawns both sidecars in parallel, waits for BOTH model loads; exits if either sidecar fails)
 bun run scripts/clone-voice.ts <ref.wav> [name] [--lang de|en]   # clone a voice -> voices/de/<name>.safetensors (de) or voices/en/<name>.safetensors (en)
-bun test                        # run tests (none yet)
+bun test                        # run tests (MCP endpoint: test/mcp.test.ts)
 tsc --noEmit                    # typecheck (uses tsconfig.json; types from bun-types)
 ```
 
@@ -37,8 +42,26 @@ There is no linter configured. Test endpoints with curl against a running server
 ## Conventions
 
 - ESM TypeScript, `bun-types` only, no external TS/JS deps; keep it that way unless needed.
+  The ONE exception is the MCP endpoint (`src/routes/mcp.ts`), which uses
+  `@modelcontextprotocol/sdk` + `zod` (see below).
 - Route handlers live in `src/routes/*.ts`, dispatched in `src/server.ts` (plain path+method
   match, no router). Add new routes there (and in `src/openapi.ts` + the 404 list).
+- **MCP endpoint (`POST /mcp`, `GET /mcp/audio/<id>`)**: uses the SDK's
+  `WebStandardStreamableHTTPServerTransport` in STATELESS mode (no `sessionIdGenerator` → no
+  session ids, no validation; each POST is an independent initialize/tools list/call exchange)
+  with `enableJsonResponse: true` (plain JSON responses, no SSE — proxy-friendly, the server
+  sends no server-to-client notifications; GET/DELETE on /mcp are 405). A fresh `McpServer` +
+  transport is created PER REQUEST and closed afterwards — keep it that way (no shared
+  long-lived transport: it would break on server restart and couple concurrent requests).
+  `generate_speech` defaults `format` to `opus` (compact) unlike the HTTP endpoints'
+  wav default. The tool result carries a `resource_link` to `GET /mcp/audio/<id>`
+  (in-memory cache, 10 min TTL, 256 entries max; raw bytes, same Content-Type as the
+  format) by default — no base64, so clients fetch the link for the bytes; pass
+  `inline_audio: true` to also embed the audio as a base64 `audio` content block. Optional
+  bearer auth: `MCP_API_KEY` env var guards both /mcp routes
+  (`getMcpApiKey()` in config.ts; unset = open). Tool errors return `isError: true` with the
+  message as text content (MCP convention), not JSON-RPC errors — the HTTP status mapping
+  (400/502/503) lives in `TtsError.status` in routes/tts.ts, shared with /tts + /v1/audio/speech.
 - ONE Python sidecar per language is managed in `src/sidecar.ts` (`sidecars: Record<Lang, …>`,
   helpers take a `lang` argument: `sidecarUrl(lang, path)`, `isSidecarReady(lang)`,
   `startSidecars()`, `stopSidecars()`). Each is spawned as
@@ -198,6 +221,8 @@ There is no linter configured. Test endpoints with curl against a running server
    request-level `bitrate` wins). NOTE: the PocketTTS model has **no per-request speed
    parameter**, do not invent one. (The OpenAI endpoint accepts a `speed` field for
    compatibility: it is validated — finite number 0.25–4.0 — and then ignored.)
+  - `MCP_API_KEY` (optional): when set, `POST /mcp` and `GET /mcp/audio/*` require
+    `Authorization: Bearer <key>` (constant-time compare); unset = open.
   - Request params `lang` + `postprocess` + `effects` + `format` + `bitrate` are accepted by
     `/tts`, `/tts/stream` (Bun validates lang/postprocess/format/bitrate; the sidecar
     validates effects and all of them) and by `/v1/audio/speech` (OpenAI shape, see above;

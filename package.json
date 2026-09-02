@@ -11,5 +11,9 @@
   },
   "devDependencies": {
     "bun-types": "^1.4.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
   }
 }

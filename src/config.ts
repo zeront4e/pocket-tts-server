@@ -139,6 +139,14 @@ export function getOpusBitrate(): number {
   return Math.min(510, Math.max(6, n));
 }
 
+// Optional bearer key guarding the MCP endpoint (MCP_API_KEY env var). Unset
+// (or empty) means the endpoint is open; when set, requests to POST /mcp and
+// GET /mcp/audio/* must carry `Authorization: Bearer <key>`.
+export function getMcpApiKey(): string | null {
+  const v = (Bun.env.MCP_API_KEY ?? "").trim();
+  return v || null;
+}
+
 // Synthesis language for requests that do not carry a `lang` field
 // (DEFAULT_LANGUAGE env var, default "de").
 export function getDefaultLang(): Lang {

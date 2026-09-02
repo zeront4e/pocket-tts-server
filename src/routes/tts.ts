@@ -190,13 +190,33 @@ export async function ttsGenerate(request: Request): Promise<Response> {
   return synthesizeTts(body, { clientSignal: clientAbortSignal(request) });
 }
 
-// Shared synthesis pipeline for an already-parsed JSON body: lang + voice
-// resolution, sidecar fetch, WAV header patch, attachment response. Used by
-// /tts and by the OpenAI-compatible /v1/audio/speech endpoint (which builds a
-// TtsRequest from the OpenAI request shape and passes attachment: false).
-export async function synthesizeTts(body: TtsRequest | null, opts: { attachment?: boolean; clientSignal?: AbortSignal } = {}): Promise<Response> {
+// Error with an HTTP status, thrown by synthesizeAudio(). Callers map the
+// status to their own error envelope (400/502/503 JSON for HTTP routes,
+// isError text for the MCP tool).
+export class TtsError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TtsError";
+  }
+}
+
+export interface SynthesizedAudio {
+  buffer: Buffer;
+  format: OutputFormat;
+  contentType: string;
+  lang: Lang;
+}
+
+// Shared synthesis pipeline: lang resolution, readiness check, voice
+// resolution, sidecar fetch, WAV header patch. Returns the final audio bytes.
+// Used by /tts, the OpenAI-compatible /v1/audio/speech endpoint, and the MCP
+// server. Throws TtsError (with the HTTP status to report) on any failure.
+export async function synthesizeAudio(body: TtsRequest | null, opts: { clientSignal?: AbortSignal } = {}): Promise<SynthesizedAudio> {
   if (!body?.text?.trim()) {
-    return jsonError(400, "Field 'text' is required");
+    throw new TtsError(400, "Field 'text' is required");
   }
 
   let lang: Lang;
@@ -204,47 +224,88 @@ export async function synthesizeTts(body: TtsRequest | null, opts: { attachment?
   try {
     lang = resolveLang(body.lang);
   } catch (error) {
-    return jsonError(400, error instanceof Error ? error.message : "Invalid request");
+    throw new TtsError(400, error instanceof Error ? error.message : "Invalid request");
   }
 
-  const notReady = langNotReadyError(lang);
+  if (!isLanguageAvailable(lang)) {
+    throw new TtsError(503, languageUnavailableError(lang));
+  }
 
-  if (notReady) return notReady;
+  if (!isSidecarReady(lang)) {
+    throw new TtsError(503, `TTS sidecar for language "${lang}" not ready`);
+  }
+
+  let formData: FormData;
+  let format: OutputFormat;
 
   try {
-    const { formData, format } = buildForm(body, lang);
+    ({ formData, format } = buildForm(body, lang));
+  } catch (error) {
+    throw new TtsError(400, error instanceof Error ? error.message : "Invalid request");
+  }
 
-    const res = await fetch(sidecarUrl(lang, "/tts"), {
+  let res: Response;
+
+  try {
+    res = await fetch(sidecarUrl(lang, "/tts"), {
       method: "POST",
       body: formData,
       signal: opts.clientSignal,
     });
-
-    const sidecarErr = await sidecarError(res);
-
-    if (sidecarErr) return sidecarErr;
-
-    let buffer = Buffer.from(await res.arrayBuffer());
-
-    if (format === "wav") {
-      buffer = patchWavHeader(buffer);
-    }
-
-    const headers: Record<string, string> = {
-      "Content-Type": FORMAT_CONTENT_TYPE[format],
-      "Content-Length": String(buffer.length),
-    };
-
-    // The OpenAI-compatible endpoint returns bare audio bytes (no
-    // Content-Disposition), the native /tts endpoint a download attachment.
-    if (opts.attachment !== false) {
-      headers["Content-Disposition"] = `attachment; filename="speech.${format}"`;
-    }
-
-    return new Response(buffer, { headers });
   } catch (error) {
+    throw new TtsError(502, error instanceof Error ? `Sidecar request failed: ${error.message}` : "Sidecar request failed");
+  }
+
+  const sidecarErr = await sidecarErrorDetails(res);
+
+  if (sidecarErr) {
+    throw new TtsError(sidecarErr.status, sidecarErr.message);
+  }
+
+  let buffer = Buffer.from(await res.arrayBuffer());
+
+  if (format === "wav") {
+    buffer = patchWavHeader(buffer);
+  }
+
+  return { buffer, format, contentType: FORMAT_CONTENT_TYPE[format], lang };
+}
+
+// Zero-copy BodyInit over a Buffer (Bun Buffers are always backed by a
+// regular ArrayBuffer; the typed-array view keeps this BodyInit-assignable
+// across TypeScript versions).
+export function bodyFromBuffer(buffer: Buffer): BodyInit {
+  return new Uint8Array(buffer.buffer as ArrayBuffer, buffer.byteOffset, buffer.byteLength);
+}
+
+// HTTP wrapper around synthesizeAudio(): maps TtsError to a JSON error
+// response and success to an audio byte response. Used by /tts and by the
+// OpenAI-compatible /v1/audio/speech endpoint (which passes attachment: false).
+export async function synthesizeTts(body: TtsRequest | null, opts: { attachment?: boolean; clientSignal?: AbortSignal } = {}): Promise<Response> {
+  let audio: SynthesizedAudio;
+
+  try {
+    audio = await synthesizeAudio(body, { clientSignal: opts.clientSignal });
+  } catch (error) {
+    if (error instanceof TtsError) {
+      return jsonError(error.status, error.message);
+    }
+
     return jsonError(400, error instanceof Error ? error.message : "Invalid request");
   }
+
+  const headers: Record<string, string> = {
+    "Content-Type": audio.contentType,
+    "Content-Length": String(audio.buffer.length),
+  };
+
+  // The OpenAI-compatible endpoint returns bare audio bytes (no
+  // Content-Disposition), the native /tts endpoint a download attachment.
+  if (opts.attachment !== false) {
+    headers["Content-Disposition"] = `attachment; filename="speech.${audio.format}"`;
+  }
+
+  return new Response(bodyFromBuffer(audio.buffer), { headers });
 }
 
 export async function ttsStream(request: Request): Promise<Response> {
@@ -282,9 +343,9 @@ export async function ttsStream(request: Request): Promise<Response> {
     if (!res.ok) {
       upstream.abort();
 
-      const err = await sidecarError(res);
+      const err = await sidecarErrorDetails(res);
 
-      return err ?? jsonError(502, "Sidecar error");
+      return err ? jsonError(err.status, err.message) : jsonError(502, "Sidecar error");
     }
 
     const reader = res.body?.getReader();
@@ -358,10 +419,10 @@ function clientAbortSignal(req: Request): AbortSignal | undefined {
   return req.signal;
 }
 
-// Map a failed sidecar response to a client response: 400s are validation
+// Map a failed sidecar response to status + message: 400s are validation
 // errors from the sidecar (e.g. bad effects) and stay 400; everything else
 // is a 502. Returns null for successful responses.
-async function sidecarError(res: Response): Promise<Response | null> {
+async function sidecarErrorDetails(res: Response): Promise<{ status: number; message: string } | null> {
   if (res.ok) return null;
 
   const text = await res.text();
@@ -374,7 +435,7 @@ async function sidecarError(res: Response): Promise<Response | null> {
     message = detail || text || "Invalid request";
   }
 
-  return jsonError(res.status === 400 ? 400 : 502, message);
+  return { status: res.status === 400 ? 400 : 502, message };
 }
 
 function jsonError(status: number, message: string): Response {

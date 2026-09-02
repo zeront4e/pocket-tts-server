@@ -7,7 +7,7 @@ export function openapiSpec() {
     openapi: "3.0.3",
     info: {
       title: "PocketTTS Server API",
-      version: "2.1.0",
+      version: "2.2.0",
       description:
         "Bun server proxying PocketTTS (Kyutai) Python sidecars, one per language, each holding " +
         "its model in memory: German 24-layer (`de`) and English (`en`). Set the `lang` field " +
@@ -35,6 +35,7 @@ export function openapiSpec() {
     tags: [
       { name: "tts", description: "Speech generation" },
       { name: "openai", description: "OpenAI-compatible API" },
+      { name: "mcp", description: "MCP server (AI agents, Streamable HTTP)" },
       { name: "voices", description: "Voice list and cloning" },
       { name: "meta", description: "Health and documentation" },
     ],
@@ -164,6 +165,93 @@ export function openapiSpec() {
             503: {
               description: "Language sidecar not ready (OpenAI error envelope)",
               content: { "application/json": { schema: { $ref: "#/components/schemas/OpenAiError" } } },
+            },
+          },
+        },
+      },
+      "/mcp": {
+        post: {
+          tags: ["mcp"],
+          summary: "MCP server endpoint (Streamable HTTP)",
+          description:
+            "Model Context Protocol server for AI agents, using the MCP Streamable HTTP transport " +
+            "(JSON-RPC 2.0 messages in, JSON or 202 out; the endpoint is stateless, no session ids, " +
+             "no SSE). Point an MCP client or gateway at this URL. Tools: `generate_speech` " +
+             "(text-to-speech; Opus by default; returns a resource_link to the raw bytes at " +
+             "GET /mcp/audio/{id}, valid ~10 minutes — no base64 by default; pass inline_audio=true " +
+             "to also embed the audio as a base64 block) and `list_voices` (built-in + custom voices " +
+             "per language). Standard MCP methods work: initialize, ping, tools/list, tools/call; " +
+            "notifications get HTTP 202. When the MCP_API_KEY env var is set, requests must carry " +
+            "Authorization: Bearer <key>.",
+          operationId: "mcp",
+          requestBody: {
+            required: true,
+            description: "A single JSON-RPC 2.0 message or a batch array (MCP Streamable HTTP).",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  description: "JSON-RPC 2.0 request (e.g. { jsonrpc, id, method: \"tools/call\", params: { name, arguments } })",
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "JSON-RPC result (application/json)",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            202: {
+              description: "Accepted (notifications carry no response body)",
+            },
+            400: {
+              description: "Parse error / invalid JSON-RPC request",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+            },
+            401: {
+              description: "Missing or wrong bearer key when MCP_API_KEY is set",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+            },
+          },
+        },
+      },
+      "/mcp/audio/{id}": {
+        get: {
+          tags: ["mcp"],
+          summary: "Download a generated take (raw bytes)",
+          description:
+            "Serves the raw audio bytes (no base64) of a previously generated take, referenced by the " +
+            "resource_link returned by the generate_speech MCP tool. The audio is kept in memory for " +
+            "~10 minutes after generation (256 entries max).",
+          operationId: "mcpAudio",
+          parameters: [
+            {
+              name: "id",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+              description: "Opaque audio id from the generate_speech resource_link",
+            },
+          ],
+          responses: {
+            200: {
+              description: "Audio bytes (Content-Type per the format used at generation time)",
+              content: {
+                "audio/opus": { schema: { type: "string", format: "binary" } },
+                "audio/wav": { schema: { type: "string", format: "binary" } },
+                "audio/mpeg": { schema: { type: "string", format: "binary" } },
+                "audio/aac": { schema: { type: "string", format: "binary" } },
+                "audio/flac": { schema: { type: "string", format: "binary" } },
+                "application/octet-stream": { schema: { type: "string", format: "binary" } },
+              },
+            },
+            401: {
+              description: "Missing or wrong bearer key when MCP_API_KEY is set",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+            },
+            404: {
+              description: "Unknown id or expired",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
             },
           },
         },

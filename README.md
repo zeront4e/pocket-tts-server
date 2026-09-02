@@ -19,6 +19,8 @@ API, and self-hosted Swagger docs.
   (`format` field, configurable bitrate for the lossy formats)
 - **OpenAI-compatible API:** `POST /v1/audio/speech` speaks the OpenAI `audio.speech` request
   shape (drop-in for the official SDKs, `baseURL` → `…/v1`)
+- **MCP server:** `POST /mcp` (Model Context Protocol, Streamable HTTP) exposes `generate_speech`
+  + `list_voices` tools for AI agents and MCP gateways
 - **Runtime:** CPU-only (int8 quantized), ~200 ms to first audio chunk
 - **Default voices:** `juergen` (German), `alba` (English)
 
@@ -30,6 +32,7 @@ Bun server (port 3001)         Python sidecar DE (8081)   Python sidecar EN (808
 │ POST /tts              │    │ sidecar_wrapper.py │     │ sidecar_wrapper.py │
 │ POST /tts/stream       │    │ (German 24l model) │     │ (English model)    │
 │ POST /v1/audio/speech  │    └────────────────────┘     └────────────────────┘
+│ POST /mcp (MCP server) │
 │ POST /voices/clone     │
 │ GET  /voices           │         (each: /tts streaming, /health)
 │ GET  /   (demo page)   │
@@ -106,6 +109,8 @@ raw spec at `/openapi.json`).
 | `/tts`             | POST   | `{"text": "...", "lang": "de\|en", "voice": "juergen", "format": "wav\|opus\|mp3\|aac\|flac\|pcm", "bitrate": 128, "postprocess": "auto", "effects": "cathedral"}` (all optional except `text`) | audio bytes: `audio/wav` (default), `audio/opus`, `audio/mpeg`, `audio/aac`, `audio/flac`, or raw PCM (`application/octet-stream`) |
 | `/tts/stream`      | POST   | same                                                                                                                                                                      | chunked audio stream (same formats as `/tts`)                     |
 | `/v1/audio/speech` | POST   | OpenAI shape: `{"model": "…", "input": "…", "voice": "…", "response_format": "mp3\|opus\|aac\|flac\|wav\|pcm", "language": "de\|en", "speed": 1.0, "instructions": "…"}` (`model` + `input` required) | audio bytes (same formats; no `Content-Disposition`) or OpenAI error envelope `{"error": {message, type, param, code}}` |
+| `/mcp`             | POST   | MCP Streamable HTTP (JSON-RPC 2.0): `initialize`, `ping`, `tools/list`, `tools/call` — tools `generate_speech` + `list_voices` | JSON-RPC result (a `resource_link` to raw bytes + text summary, no base64 by default; base64 with `inline_audio: true`) or 202 (notifications) |
+| `/mcp/audio/{id}`  | GET    | — (id from a `generate_speech` `resource_link`)                                                                                                                        | raw audio bytes (no base64), same formats as `/tts`; ~10 min TTL |
 | `/voices`          | GET    | query: `?lang=de\|en` (optional)                                                                                                                                          | JSON voice list (`{mode, language, voices}`)                      |
 | `/voices/clone`    | POST   | multipart (`name` + `audio`: WAV/MP3 reference, `lang`: optional)                                                                                                         | JSON                                                              |
 | `/voices/import`   | POST   | multipart (`name` + `file`: existing `.safetensors` voice, `lang`: optional)                                                                                              | JSON (import overwrites an existing name)                         |
@@ -222,6 +227,53 @@ defaults to `mp3` (the `audio/<name>` variants are accepted), `language` → `la
 (0.25–4.0) but ignored, `instructions` is ignored. `postprocess`/`effects` are not exposed
 (server defaults apply). Success returns the raw audio bytes (no `Content-Disposition`);
 errors use the OpenAI envelope `{"error": {"message", "type", "param", "code"}}`.
+
+### MCP server (for AI agents)
+
+`POST /mcp` is an [MCP](https://modelcontextprotocol.io) server using the **Streamable HTTP**
+transport (JSON-RPC 2.0), built on `@modelcontextprotocol/sdk`. Point any MCP client or
+gateway at it to let an agent generate speech:
+
+```jsonc
+// MCP client / gateway config (HTTP transport)
+{ "mcpServers": { "pocket-tts": { "url": "http://localhost:3001/mcp" } } }
+```
+
+Tools:
+
+- **`generate_speech`** — args: `text` (required), `lang` (`de`/`en`, default = server default),
+  `voice`, `format` (`opus` **by default** for compact audio; `wav`/`mp3`/`aac`/`flac`/`pcm`
+  also work), `bitrate`, `postprocess`, `effects`, and `inline_audio` (default `false`).
+  The result is a **`resource_link`** to `GET /mcp/audio/{id}`, which serves the audio as
+  *raw bytes (no base64)* for ~10 minutes, plus a text summary — so base64 payload overhead
+  is avoided by default (the agent/gateway fetches the link for the bytes). Set
+  `inline_audio: true` to also embed the audio as a **base64 MCP `audio` content block**
+  (MCP's native binary content type) in the tool result.
+- **`list_voices`** — args: `lang` (optional). Returns the built-in + custom voices for the
+  language, marking the default.
+
+Handshake (what the gateway does under the hood):
+
+```bash
+curl -s http://localhost:3001/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1.0"}}}'
+
+curl -s http://localhost:3001/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+curl -s http://localhost:3001/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"generate_speech","arguments":{"text":"Hallo Welt","lang":"de"}}}'
+# → content: [resource_link → http://…/mcp/audio/<uuid>, text summary]   (no base64 by default)
+
+# fetch the raw bytes (no base64) the resource_link points at:
+curl -s http://localhost:3001/mcp/audio/<uuid> -o speech.opus
+```
+
+Notes: the endpoint is **stateless** (no session ids, `initialize` / `tools/call` each work as
+independent requests) and returns plain JSON (no SSE stream), so it proxies cleanly through an
+HTTP gateway. Generation is serialized server-wide, so long texts can take a few seconds.
+Optional auth: set `MCP_API_KEY` and requests must carry
+`Authorization: Bearer <key>` (same guard applies to `GET /mcp/audio/{id}`).
 
 ### Post-processing & effects
 
@@ -484,6 +536,7 @@ Environment variables (see `.env`):
 | `POSTPROCESS`      | `auto`                     | server-wide default for the `postprocess` request param (`auto`/`full`/`off`)                                             |
 | `OUTPUT_FORMAT`    | `wav`                      | server-wide default for the `format` request param (`wav`/`opus`/`mp3`/`aac`/`flac`/`pcm`)                                |
 | `OPUS_BITRATE`     | `32`                       | default Opus bitrate in kbps (6–510), a request-level `bitrate` wins                                                      |
+| `MCP_API_KEY`      | _(unset)_                  | when set, `POST /mcp` and `GET /mcp/audio/*` require `Authorization: Bearer <key>` (unset = open)                          |
 
 ## Project layout
 
