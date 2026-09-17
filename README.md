@@ -10,7 +10,7 @@ API, and self-hosted Swagger docs.
 
 - **Models:** German 24-layer (`german_24l`, 24 transformer layers, best quality) and English
   (6-layer) from the ungated mirror
-  [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated), no HF login needed
+  [`lunahr/pocket-tts-ungated`](https://huggingface.co/lunahr/pocket-tts-ungated), no HF login needed, for automated deployments
 - **Languages:** `de` (default) and `en` per request (`lang` field). Each language runs in its
   own sidecar process with its model resident in RAM, so switching is instant routing with no reload
 - **Model source:** Hugging Face download (default) **or fully local files, zero downloads**,
@@ -23,6 +23,19 @@ API, and self-hosted Swagger docs.
   + `list_voices` tools for AI agents and MCP gateways
 - **Runtime:** CPU-only (int8 quantized), ~200 ms to first audio chunk
 - **Default voices:** `juergen` (German), `alba` (English)
+
+**Pre-built image (no voice cloning):** 
+
+You can download a ready-to-run image with both models baked in
+(TTS-only, without voice cloning) that is published on the GitHub Container Registry. Pull and run it via:
+
+```bash
+docker pull ghcr.io/zeront4e/pocket-tts-server:latest
+docker run -d --name pocket-tts -p 127.0.0.1:3001:3001 ghcr.io/zeront4e/pocket-tts-server:latest
+```
+
+The server (and the web-ui) will be available at **http://127.0.0.1:3001/** by default (see [Docker](#docker) for the full details,
+volumes, and the build-from-source options).
 
 ## Architecture
 
