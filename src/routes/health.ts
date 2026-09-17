@@ -5,6 +5,7 @@ import {
   getTemp,
   getQuantize,
   isLocalMode,
+  isVoiceCloningEnabled,
   getModelDir,
   getDefaultLang,
   isLanguageAvailable,
@@ -37,6 +38,9 @@ export async function healthHandler(_req: Request): Promise<Response> {
     voices_dir: getVoicesDir(),
     temperature: getTemp(),
     quantized: getQuantize(),
+    // Voice cloning is opt-in (VOICE_CLONING env var); the demo disables its
+    // clone controls when this is false and POST /voices/clone returns 451.
+    voice_cloning: isVoiceCloningEnabled(),
     default_language: defaultLang,
     languages,
     timestamp: new Date().toISOString(),

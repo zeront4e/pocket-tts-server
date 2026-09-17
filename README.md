@@ -397,6 +397,14 @@ the script derives `ghcr.io/<owner>/<repo>` (lowercased) from the `origin` git r
 Useful flags: `--tag name:ver` (extra tag), `--platform linux/amd64` (cross-build),
 `--no-cache`, and `VERSION=1.2.3` (explicit version tag instead of the git-derived one).
 
+### Bundled-models release image (all models baked in, no downloads)
+
+`image-data/create-image.sh` builds a release image that **bakes the German + English
+models into the image** (local mode — no first-start download) and cuts a versioned git tag
+from `package.json`. Voice cloning is off by default, so the image is safe to publish
+publicly (TTS-only). Run it manually or via the **Image release** GitHub Action
+(`.github/workflows/image-release.yml`). See `image-data/README.md` for the full flow.
+
 ## Local model files (no Hugging Face download)
 
 By default the model, tokenizer and built-in voice embeddings are downloaded from Hugging Face
@@ -464,6 +472,11 @@ process. The default for requests without `lang` is `DEFAULT_LANGUAGE` (`de`/`en
 `/health` reports per-language readiness under `languages`.
 
 ## Voice cloning
+
+> **Opt-in:** voice cloning is disabled by default (`VOICE_CLONING=0`) so the public Docker
+> image ships **TTS-only** — `POST /voices/clone` returns `451` and the demo hides/disables
+> the clone controls. Set `VOICE_CLONING=1` to enable it. (Importing an existing voice via
+> `POST /voices/import` is unaffected and always works.)
 
 Clone a voice from a reference recording (5–30 s of clean speech works best, noisy or
 multi-speaker audio degrades the result).
@@ -537,13 +550,19 @@ Environment variables (see `.env`):
 | `OUTPUT_FORMAT`    | `wav`                      | server-wide default for the `format` request param (`wav`/`opus`/`mp3`/`aac`/`flac`/`pcm`)                                |
 | `OPUS_BITRATE`     | `32`                       | default Opus bitrate in kbps (6–510), a request-level `bitrate` wins                                                      |
 | `MCP_API_KEY`      | _(unset)_                  | when set, `POST /mcp` and `GET /mcp/audio/*` require `Authorization: Bearer <key>` (unset = open)                          |
+| `VOICE_CLONING`    | `0` (off)                  | opt-in voice cloning: set `1`/`true`/`on` to enable `POST /voices/clone` (and the demo controls). Off ⇒ the endpoint returns `451` and the demo disables cloning (the public image ships TTS-only) |
 
 ## Project layout
 
 ```
-Dockerfile            Docker image (Bun + Python sidecar + CPU PyTorch, model not baked in)
+Dockerfile            Docker image (Bun + Python sidecar + CPU PyTorch; optional BUNDLE_MODELS=1 bakes in the models)
 docker-compose.yml    Compose setup (required volume: tts-data)
 docker-build.sh       build the image locally (+ optional push to a registry)
+image-data/
+  create-image.sh     cut a versioned release: git tag + bundled-models image (+ optional push to GHCR)
+  README.md           release-image docs (what's baked in, local + CI usage)
+.github/workflows/
+  image-release.yml   manual Action to run image-data/create-image.sh (tag + build + push)
 src/
   index.ts          entry point (starts both sidecars, then HTTP server)
   server.ts         route dispatch

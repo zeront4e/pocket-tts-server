@@ -6,4 +6,6 @@ node_modules
 voices
 data
 models
+image-data
+.github
 *.md

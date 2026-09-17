@@ -413,6 +413,8 @@ export function openapiSpec() {
              "language the clone is made for (German 24-layer model or English model, clones are " +
              "architecture-specific and only work with the language they were created for); the " +
              "clone is stored in that language's directory. " +
+             "**Opt-in:** voice cloning is disabled by default (so the public Docker image ships " +
+             "TTS-only) and returns 451 until `VOICE_CLONING=1` is set on the server. " +
              "Legal note: only clone voices you have the rights to / consent for.",
           operationId: "voicesClone",
           requestBody: {
@@ -429,6 +431,7 @@ export function openapiSpec() {
               content: { "application/json": { schema: { $ref: "#/components/schemas/CloneResult" } } },
             },
             400: { $ref: "#/components/responses/BadRequest" },
+            451: { $ref: "#/components/responses/Unavailable" },
             500: { $ref: "#/components/responses/BadRequest" },
             503: { $ref: "#/components/responses/NotReady" },
           },
@@ -889,6 +892,7 @@ export function openapiSpec() {
             voices_dir: { type: "string" },
             temperature: { type: "number", description: "Sampling temperature (TEMP env var)." },
             quantized: { type: "boolean", description: "int8 quantization enabled (QUANTIZE env var)." },
+            voice_cloning: { type: "boolean", description: "Whether voice cloning is enabled (VOICE_CLONING env var). When false, POST /voices/clone returns 451 and the demo disables its clone controls." },
             default_language: { type: "string", enum: ["de", "en"], description: "Language used when a request omits `lang` (DEFAULT_LANGUAGE env var)." },
             languages: {
               type: "object",
@@ -927,6 +931,12 @@ export function openapiSpec() {
         },
         NotReady: {
           description: "TTS sidecar not ready yet",
+          content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+        },
+        Unavailable: {
+          description:
+            "Feature disabled on this server (451). Voice cloning returns this until " +
+            "VOICE_CLONING=1 is set.",
           content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
         },
       },

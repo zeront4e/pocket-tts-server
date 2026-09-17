@@ -235,7 +235,7 @@
       <img src="/icon.jpg" alt="PocketTTS Server icon" width="64" height="64">
       <div>
         <h1>PocketTTS Server</h1>
-        <p class="subtitle">German 24l + English models (ungated) &mdash; 24kHz mono &mdash; streaming + voice cloning</p>
+        <p class="subtitle" id="subtitle">German 24l + English models &mdash; 24kHz mono &mdash; streaming</p>
       </div>
     </div>
 
@@ -436,6 +436,26 @@
         }
         refreshLangToggle();
         applySampleText(currentLang);
+        
+        // Voice cloning is opt-in (VOICE_CLONING env var). When the server has
+        // it disabled (the default, the clone endpoint returns 451), so we disable the
+        // clone controls.
+        const vcEnabled = data.voice_cloning === true;
+
+        for (const id of ["btnClone", "voiceName", "voiceFile"]) {
+          const el = document.getElementById(id);
+          if (el) el.disabled = !vcEnabled;
+        }
+        
+        document.getElementById("subtitle").textContent =
+          `German 24l + English models (ungated) — 24kHz mono — streaming${vcEnabled ? " + voice cloning" : " (voice cloning disabled)"}`;
+        
+        if (!vcEnabled) {
+          setStatus("cloneStatus",
+            "Voice cloning is disabled on this server (set VOICE_CLONING=1 to enable). " +
+            "Importing an existing .safetensors voice below still works.");
+        }
+
         details.textContent = bits.join(" · ");
         loadVoices();
       } catch (e) {

@@ -11,7 +11,7 @@
 //
 //   // 2. Streaming synthesis (first bytes arrive while the model is still
 //   //    generating; cancel at any time with stream.cancel()):
-//   const stream = tts.synthesizeStream({ text: "Eine etwas laengere Passage ..." });
+//   const stream = tts.synthesizeStream({ text: "Eine etwas längere Passage ..." });
 //   //    post-processing runs per generated chunk on the server (options
 //   //    `postprocess` and `effects`, see SynthesizeOptions).
 //   for await (const chunk of stream.chunks()) {

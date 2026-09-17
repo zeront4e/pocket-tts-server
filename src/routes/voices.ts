@@ -7,6 +7,7 @@ import {
   isLocalMode,
   isBuiltinVoice,
   isLanguageAvailable,
+  isVoiceCloningEnabled,
   languageUnavailableError,
   getDefaultLang,
   normalizeLang,
@@ -109,6 +110,21 @@ export async function voicesClone(req: Request): Promise<Response> {
   // No sidecar readiness gate: cloning spawns its own `pocket-tts export-voice`
   // process (which loads the model itself from the language's config), so it
   // works independently of which sidecars are warm.
+
+  // Voice cloning is opt-in (VOICE_CLONING env var). When disabled (the default,
+  // so the public image ships TTS-only), refuse with 451 "Unavailable For Legal
+  // Reasons" before touching the request body at all.
+  if (!isVoiceCloningEnabled()) {
+    return Response.json(
+      {
+        error:
+          "Voice cloning is disabled on this server. " +
+          "Set VOICE_CLONING=1 to enable it (importing an existing voice via " +
+          "POST /voices/import still works).",
+      },
+      { status: 451 },
+    );
+  }
 
   const contentType = req.headers.get("content-type") ?? "";
 

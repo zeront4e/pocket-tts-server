@@ -147,6 +147,15 @@ export function getMcpApiKey(): string | null {
   return v || null;
 }
 
+// Voice-cloning feature flag (VOICE_CLONING env var). OFF by default (opt-in):
+// the public image ships TTS-only, and the clone endpoint returns 451
+// (Unavailable For Legal Reasons) until this is set. Enabled when the value is
+// "1", "true", or "on" (case-insensitive).
+export function isVoiceCloningEnabled(): boolean {
+  const v = (Bun.env.VOICE_CLONING ?? "0").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on";
+}
+
 // Synthesis language for requests that do not carry a `lang` field
 // (DEFAULT_LANGUAGE env var, default "de").
 export function getDefaultLang(): Lang {

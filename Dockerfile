@@ -3,11 +3,17 @@
 # PocketTTS server (Bun) + per-language PocketTTS Python sidecars (de + en) —
 # CPU inference.
 #
-# The models are intentionally NOT baked into the image (keeps it minimal).
-#   1. "huggingface" mode (default): first start downloads both models + voices
-#      (~1 GB) into $HF_HOME (/data/hf) and caches them in your volume.
+# Model source (three ways):
+#   1. "huggingface" mode (default, BUNDLE_MODELS unset): first start downloads
+#      both models + voices (~1 GB) into $HF_HOME (/data/hf) and caches them in
+#      your volume.
 #   2. "local" mode: set MODEL_DIR / MODEL_DIR_EN to directories containing
 #      model.safetensors, tokenizer.model, embeddings/ (see docker-compose.yml).
+#   3. "bundled" mode: build with --build-arg BUNDLE_MODELS=1 --build-arg
+#      MODEL_DIR=/app/models/de --build-arg MODEL_DIR_EN=/app/models/en to bake
+#      the ungated de+en models into the image (local mode, no runtime download).
+#
+# Voice cloning is opt-in (VOICE_CLONING=1); the public image ships TTS-only.
 
 ARG BUN_VERSION=1.3.14
 ARG BUN_ARCH=x64 # or: aarch64
@@ -15,6 +21,15 @@ ARG UV_VERSION=0.12.5
 ARG PYTHON_VERSION=3.12
 ARG TORCH_VERSION=2.13.0+cpu
 ARG POCKET_TTS_VERSION=2.1.0
+
+# BUNDLE_MODELS=1 bakes the German + English models into the image (local mode,
+# no runtime download). When set, MODEL_DIR / MODEL_DIR_EN are applied so the
+# sidecars load the baked models. Leave both MODEL_DIR* empty for the default
+# Hugging Face download-on-first-run behavior. Voice cloning stays off unless
+# VOICE_CLONING=1 (opt-in, see config.ts).
+ARG BUNDLE_MODELS=0
+ARG MODEL_DIR=""
+ARG MODEL_DIR_EN=""
 
 FROM debian:bookworm-slim
 
@@ -69,8 +84,31 @@ COPY --chown=tts:tts scripts/ ./scripts/
 COPY --chown=tts:tts static/ ./static/
 COPY --chown=tts:tts config/ ./config/
 
+# --- optional: bake the (ungated) German + English models into the image -----
+# Only runs when BUNDLE_MODELS=1. Downloads both language dirs from the ungated
+# mirror (no HF token needed) and moves them into the MODEL_DIR / MODEL_DIR_EN
+# build args, so the sidecars load them in local mode with zero runtime
+# downloads. Voice cloning stays off unless VOICE_CLONING=1 (opt-in).
+ARG BUNDLE_MODELS
+ARG MODEL_DIR
+ARG MODEL_DIR_EN
+RUN if [ "${BUNDLE_MODELS}" = "1" ]; then \
+    [ -n "${MODEL_DIR}" ] || { echo "BUNDLE_MODELS=1 requires MODEL_DIR to be set"; exit 1; }; \
+    [ -n "${MODEL_DIR_EN}" ] || { echo "BUNDLE_MODELS=1 requires MODEL_DIR_EN to be set"; exit 1; }; \
+    /app/.venv/bin/python -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="lunahr/pocket-tts-ungated", local_dir="/app/models/_hf", allow_patterns=["languages/german_24l/*", "languages/english/*"]); print("downloaded lunahr/pocket-tts-ungated")' \
+    && mkdir -p "$(dirname "${MODEL_DIR}")" "$(dirname "${MODEL_DIR_EN}")" \
+    && mv /app/models/_hf/languages/german_24l "${MODEL_DIR}" \
+    && mv /app/models/_hf/languages/english "${MODEL_DIR_EN}" \
+    && rm -rf /app/models/_hf \
+    && du -sh "${MODEL_DIR}" "${MODEL_DIR_EN}"; \
+  fi
+
 # --- runtime configuration (all overridable via docker-compose.yml)
+# MODEL_DIR / MODEL_DIR_EN are empty by default (Hugging Face download-on-first
+# run); BUNDLE_MODELS=1 + the build args point them at the baked models.
 ENV HOME=/home/tts \
+    MODEL_DIR="${MODEL_DIR}" \
+    MODEL_DIR_EN="${MODEL_DIR_EN}" \
     PORT=3001 \
     SIDECAR_PORT=8081 \
     SIDECAR_PORT_EN=8082 \
