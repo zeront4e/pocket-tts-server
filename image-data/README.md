@@ -51,6 +51,79 @@ PUSH=1 GHCR_REPO=ghcr.io/<you>/pocket-tts ./image-data/create-image.sh
 Useful overrides: `VERSION=2.0.0` (ignore package.json), `TAG_PREFIX=v` (tag `v1.0.0`),
 `IMAGE=my-image`, `PLATFORM=linux/amd64` (or a comma list for multi-arch), `--no-cache`.
 
+## Test the build locally
+
+`test-image.sh` is a local, non-destructive smoke test: it builds the **same** image as
+`create-image.sh` (models baked in, `BUNDLE_MODELS=1`) but with **no git tag and no push**,
+then runs the container and asserts it behaves correctly. Use it to verify a build before
+triggering the pushing GitHub Actions workflow.
+
+### Quick start
+
+```bash
+./image-data/test-image.sh                  # build + run + full test (de + en /tts)
+./image-data/test-image.sh --skip-tts       # fast: skip the (slow) /tts generation step
+```
+
+A passing run prints a `PASS:` line for each check and ends with `RESULT: PASSED` (exit 0):
+
+```text
+==> Smoke tests
+  [config]
+    PASS: mode (=local)
+    PASS: voice_cloning (=false)
+  [clone endpoint]
+    PASS: POST /voices/clone status (=451)
+==> Waiting for the models to load (status=healthy, up to 900s)
+  [TTS de]
+    PASS: status (=200)
+    PASS: content-type (contains audio/)
+    PASS: body is a WAV (RIFF) (=RIFF)
+      63404 bytes
+  [TTS en]
+    PASS: status (=200)
+    PASS: content-type (contains audio/)
+    PASS: body is a WAV (RIFF) (=RIFF)
+      59564 bytes
+
+==> RESULT: PASSED
+    image: pocket-tts-server:test
+```
+
+On any failure it prints the failing `FAIL:` line(s), dumps the last 60 lines of the
+container logs, and exits non-zero.
+
+### What it checks
+
+1. The container starts and `/health` answers.
+2. `/health` reports `mode: local` (models baked in, not Hugging Face download) and the
+   expected `voice_cloning` value.
+3. `POST /voices/clone` returns `451` when cloning is off (the default) — or `400` when it
+   is on (the endpoint is live, so the request reaches validation).
+4. (unless `--skip-tts`) `POST /tts` returns real audio for **both** the German and English
+   models: status `200`, an `audio/*` content type, and a valid `RIFF` WAV body.
+
+### Options
+
+| Flag / env | Default | Effect |
+| --- | --- | --- |
+| `--skip-tts` | off | Skip the `/tts` generation checks (no model-load wait); config/clone-only |
+| `--enable-voice-cloning` | off | Run with `VOICE_CLONING=1` and assert cloning is on (clone → `400`) |
+| `--keep` | off | Leave the container running afterwards instead of removing it |
+| `--port <p>` / `PORT` | `3001` | Host port to expose |
+| `--image <name>` / `IMAGE` | `pocket-tts-server` | Local image name |
+| `--tag <tag>` / `TAG` | `test` | Local image tag |
+| `--platform <p>` / `PLATFORM` | host arch | Target platform (a multi-arch list is not supported with `--load`) |
+| `--no-cache` / `NO_CACHE=1` | off | Build with `--no-cache` (forces the ~0.9 GB model re-download) |
+| `MODEL_DIR_DE` / `MODEL_DIR_EN` | `/app/models/de`, `/app/models/en` | Where to bake the models inside the image |
+| `VOICE_CLONING` | `0` | Value passed to the container (`1`/`true`/`on` = on); same as `--enable-voice-cloning` |
+| `START_TIMEOUT` / `HEALTH_TIMEOUT` | `120` / `900` | Seconds to wait for the HTTP server / for `status=healthy` |
+
+The expensive part is the **first** build (it downloads ~0.9 GB of models into a cached
+Docker layer); re-runs reuse the cache and are fast unless `--no-cache`. The container is
+removed on exit (keep it with `--keep`), and the produced `${IMAGE}:${TAG}` image stays
+locally (remove it with `docker rmi ${IMAGE}:${TAG}`).
+
 ## Trigger from GitHub Actions
 
 `.github/workflows/image-release.yml` is a **manual** (`workflow_dispatch`) workflow: click
