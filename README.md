@@ -357,11 +357,10 @@ The image (`Dockerfile`) contains everything needed to run: Bun server, Python s
 ### Build & run locally
 
 ```bash
-./docker-build.sh             # builds pocket-tts-server:latest (+ :<git-version>)
-docker compose up -d          # starts it (creates the required tts-data volume)
+docker compose up -d --build  # builds the image and starts it (creates the required tts-data volume)
 ```
 
-`docker compose up -d --build` does both in one step. Notes:
+Or build and start in two steps: `docker compose build` then `docker compose up -d`. Notes:
 
 - **First start (default HF mode)** downloads both models + voices (~1 GB: German model
   ~672 MB, English model ~219 MB, plus tokenizers and voice embeddings) into the `tts-data`
@@ -377,33 +376,42 @@ docker compose up -d          # starts it (creates the required tts-data volume)
 - **The volume is required:** it holds the model cache and all cloned voices.
   `docker compose down -v` deletes it (and the cached model) as well.
 
-### Push to a registry (e.g. GHCR)
+### Bundled-models release image (all models baked in, no downloads)
+
+`image-data/create-image.sh` builds a release image that **bakes the German + English
+models into the image** (local mode — no first-start download, works offline) and cuts a
+versioned git tag from `package.json`. Voice cloning is off by default, so the image is
+safe to publish publicly (TTS-only). See `image-data/README.md` for the full flow.
+
+To verify a build locally before pushing, run the non-destructive smoke test (no git tag,
+no push — builds the same image, runs it, and checks `/health`, the 451 clone response,
+and real audio from both baked models):
+
+```bash
+./image-data/test-image.sh      # build + run + smoke-test (add --skip-tts for a fast check)
+```
+
+To build and push the release image to a registry (e.g. GHCR):
 
 ```bash
 # 1. Log in. For GHCR use a personal access token with the `write:packages` scope:
 docker login ghcr.io
 
-# 2. Build + tag + push (tags: latest + git-derived version):
-REPO=ghcr.io/<your-user>/pocket-tts ./docker-build.sh --push
+# 2. Tag + build + push the git tag and the image (tags: <version> + latest):
+PUSH=1 GHCR_REPO=ghcr.io/<your-user>/pocket-tts ./image-data/create-image.sh
 
 # 3. On any other machine:
 docker pull ghcr.io/<your-user>/pocket-tts:latest
-docker run -d --name pocket-tts -p 3001:3001 -v pocket-tts-data:/data \
+docker run -d --name pocket-tts -p 3001:3001 \
   ghcr.io/<your-user>/pocket-tts:latest
 ```
 
-`REPO` works with any registry (`REPO=registry.example.com/team/pocket-tts`). If omitted,
-the script derives `ghcr.io/<owner>/<repo>` (lowercased) from the `origin` git remote.
-Useful flags: `--tag name:ver` (extra tag), `--platform linux/amd64` (cross-build),
-`--no-cache`, and `VERSION=1.2.3` (explicit version tag instead of the git-derived one).
-
-### Bundled-models release image (all models baked in, no downloads)
-
-`image-data/create-image.sh` builds a release image that **bakes the German + English
-models into the image** (local mode — no first-start download) and cuts a versioned git tag
-from `package.json`. Voice cloning is off by default, so the image is safe to publish
-publicly (TTS-only). Run it manually or via the **Image release** GitHub Action
-(`.github/workflows/image-release.yml`). See `image-data/README.md` for the full flow.
+`GHCR_REPO` works with any registry (`GHCR_REPO=registry.example.com/team/pocket-tts`). If
+omitted, the script derives `ghcr.io/<owner>/<repo>` (lowercased) from the `origin` git
+remote (or `$GITHUB_REPOSITORY`). Useful overrides: `VERSION=1.2.3` (ignore package.json),
+`TAG_PREFIX=v`, `PLATFORM=linux/amd64` (or a comma list for multi-arch), `--no-cache`.
+You can also run this on every push via the **Image release** GitHub Action
+(`.github/workflows/image-release.yml`).
 
 ## Local model files (no Hugging Face download)
 
@@ -557,10 +565,10 @@ Environment variables (see `.env`):
 ```
 Dockerfile            Docker image (Bun + Python sidecar + CPU PyTorch; optional BUNDLE_MODELS=1 bakes in the models)
 docker-compose.yml    Compose setup (required volume: tts-data)
-docker-build.sh       build the image locally (+ optional push to a registry)
 image-data/
   create-image.sh     cut a versioned release: git tag + bundled-models image (+ optional push to GHCR)
-  README.md           release-image docs (what's baked in, local + CI usage)
+  test-image.sh       local smoke test: build the same image, run it, and verify it (no tag, no push)
+  README.md           release-image docs (what's baked in, how to use both scripts, local + CI usage)
 .github/workflows/
   image-release.yml   manual Action to run image-data/create-image.sh (tag + build + push)
 src/
