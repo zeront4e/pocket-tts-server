@@ -573,49 +573,6 @@ Environment variables (see `.env`):
 | `MCP_API_KEY`      | _(unset)_                  | when set, `POST /mcp` and `GET /mcp/audio/*` require `Authorization: Bearer <key>` (unset = open)                          |
 | `VOICE_CLONING`    | `0` (off)                  | opt-in voice cloning: set `1`/`true`/`on` to enable `POST /voices/clone` (and the demo controls). Off ⇒ the endpoint returns `451` and the demo disables cloning (the public image ships TTS-only) |
 
-## Project layout
-
-```
-Dockerfile            Docker image (Bun + Python sidecar + CPU PyTorch; optional BUNDLE_MODELS=1 bakes in the models)
-docker-compose.yml    Compose setup (required volume: tts-data)
-image-data/
-  create-image.sh     cut a versioned release: git tag + bundled-models image (+ optional push to GHCR)
-  test-image.sh       local smoke test: build the same image, run it, and verify it (no tag, no push)
-  README.md           release-image docs (what's baked in, how to use both scripts, local + CI usage)
-.github/workflows/
-  image-release.yml   manual Action to run image-data/create-image.sh (tag + build + push)
-src/
-  index.ts          entry point (starts both sidecars, then HTTP server)
-  server.ts         route dispatch
-  config.ts         env/config resolution, per-language voice paths, local-mode config generation
-  sidecar.ts        spawns/monitors the per-language PocketTTS Python sidecars
-  utils.ts          locates the uv binary
-  client.ts         self-contained typed HTTP client for the server (Bun + browser)
-  openapi.ts        OpenAPI 3 spec (hand-maintained — update with routes!)
-   routes/
-     tts.ts          /tts, /tts/stream + lang/voice resolution (shared synthesizeTts pipeline)
-     openai.ts       /v1/audio/speech (OpenAI-compatible request shape + error envelope)
-     voices.ts       /voices, /voices/clone, /voices/import, /voices/download, DELETE /voices
-     docs.ts         /docs, /openapi.json, /swagger/* static assets
-     health.ts       /health (per-language status)
-scripts/
-  clone-voice.ts    CLI voice cloning (--lang de|en)
-  sidecar_wrapper.py  Python entry: loads model with TEMP/QUANTIZE, serves pocket_tts web_app
-  postproc.py       post-processing pipeline + effects engine (numpy/scipy, runs in the sidecar)
-  opusenc.py        Ogg/Opus encoder for format=opus (PyAV; native 24 kHz, no resampling)
-  audioenc.py       MP3/AAC/FLAC/PCM encoders (PyAV; native 24 kHz, no resampling)
-static/
-  index.html        browser demo at GET /
-  icon.jpg          demo icon / favicon (served at GET /icon.jpg)
-  swagger/          vendored Swagger UI assets (docs at GET /docs, offline)
-config/
-  german_24l.yaml   German model config (ungated mirror, 24-layer)
-  english.yaml      English model config (ungated mirror, 6-layer)
-voices/
-  de/               German clones (*.safetensors)
-  en/               English clones (*.safetensors)
-```
-
 ## Troubleshooting
 
 - **Slow first start:** both models + voice embeddings download once (~1 GB total: German
