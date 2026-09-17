@@ -636,3 +636,26 @@ voices/
   `$MODEL_DIR/embeddings/<name>.safetensors`, only the voices you ship are listed/usable.
 - **Cloning fails:** check the reference audio is a valid solo 5–30 s WAV/MP3,
   use `ffmpeg in.wav -ar 24000 -ac 1 cleaned.wav` to normalize first.
+
+## License
+
+The code in this repository is licensed under the **Apache License, Version 2.0**
+(see [LICENSE](LICENSE)).
+
+This project is built on top of
+**[PocketTTS](https://github.com/kyutai-labs/pocket-tts)** by
+**[kyutai-labs](https://github.com/kyutai-labs)**, which is released under the
+**MIT License**.
+
+This project also pulls in a number of third-party dependencies (Bun/TypeScript
+and Python packages). Please **review the licenses of those dependencies**
+yourself before redistributing or embedding this project. The dependency
+manifests and resolved versions live here:
+
+- **Bun / TypeScript:** [`package.json`](package.json) (deps) and
+  [`bun.lock`](bun.lock) (locked resolution), installed into `node_modules/`
+- **Python:** installed into `.venv/` by [`setup.sh`](setup.sh) / the
+  [`Dockerfile`](Dockerfile); the main ones are `pocket-tts` (MIT, above),
+  `soundfile`, and PyAV `av`. Inspect the installed set with
+  `uv pip list --format=freeze` (or `.venv/bin/pip list`)
+- **Model files:** `lunahr/pocket-tts-ungated` (see above)
